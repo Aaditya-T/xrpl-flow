@@ -10,10 +10,152 @@ export type ExecutionCallbacks = {
   network: NetworkType;
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Error code → human explanation
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TX_ERROR_HELP: Record<string, string> = {
+  tefBAD_AUTH:
+    'The signing key does not match the Account address. ' +
+    'In a multi-wallet workflow each node\'s Account must match one of your imported wallets. ' +
+    'Check that the Account field is filled with the correct address (or leave it blank to use the active wallet).',
+  tefNO_AUTH_REQUIRED: 'Authorization is not required for this operation.',
+  tefMASTER_DISABLED:  'The account\'s master key is disabled — use the regular key.',
+  tefWRONG_PRIOR:      'AccountTxnID does not match the account\'s last transaction.',
+  temBAD_AMOUNT:
+    'Invalid Amount format. ' +
+    'Use a drops string (e.g. "1000000") for XRP, or {"currency":"USD","issuer":"r...","value":"10"} for tokens.',
+  temBAD_FEE:          'Invalid Fee value.',
+  temBAD_SEQUENCE:     'Invalid Sequence number.',
+  temBAD_AUTH_MASTER:  'Invalid use of the master key.',
+  temBAD_CURRENCY:     'Malformed currency code.',
+  temBAD_ISSUER:       'Malformed issuer address.',
+  temDST_IS_SRC:       'Destination cannot be the same as the source account.',
+  temINVALID_FLAG:     'Invalid Flags value for this transaction type.',
+  temREDUNDANT:        'Transaction would make no change (e.g. TrustSet with existing limit).',
+  terINSUF_FEE_B:      'Insufficient XRP to cover the fee. Fund the account first.',
+  terNO_ACCOUNT:       'Account not found on ledger. Fund this address to activate it.',
+  terPRE_SEQ:          'Sequence number is too high for the current account sequence.',
+  tecUNFUNDED_PAYMENT: 'Insufficient balance to send this payment.',
+  tecNO_DST:
+    'Destination account does not exist. Send at least 10 XRP to activate it first.',
+  tecNO_DST_INSUF_XRP:
+    'Destination account does not exist and the amount is below the activation reserve.',
+  tecNO_LINE_INSUF_RESERVE:
+    'Insufficient XRP reserve to create a new trust line (~2 XRP required).',
+  tecNO_LINE_NO_ZERO:  'Cannot delete a non-zero trust line.',
+  tecNO_TRUST:         'No trust line from holder to issuer. Holder must run TrustSet first.',
+  tecPATH_DRY:
+    'Cross-currency path is completely dry. Verify trust lines exist and issuer has issued tokens.',
+  tecPATH_PARTIAL:
+    'Partial payment delivered — consider enabling tfPartialPayment flag or adjust SendMax/DeliverMin.',
+  tecUNFUNDED_OFFER:   'Insufficient balance to fund this offer.',
+  tecOWNER_COUNT:      'Account has too many objects — delete some to free reserve.',
+};
+
 /**
- * Outer Batch envelope execution-mode flags (BatchFlags in xrpl.js).
- * Source: https://github.com/XRPLF/xrpl.js/blob/main/packages/xrpl/src/models/transactions/batch.ts
+ * Returns a human-readable explanation for an XRPL engine_result code.
+ * Falls back to the raw engine_result_message if no mapping exists.
  */
+function humanizeError(
+  engineResult: string,
+  rawMessage: string,
+  tx: Record<string, any>,
+): string {
+  const help = TX_ERROR_HELP[engineResult];
+  const base = help
+    ? `${engineResult}: ${help}`
+    : `${engineResult}: ${rawMessage || 'Transaction rejected by the ledger.'}`;
+
+  const extra: string[] = [];
+
+  if (engineResult === 'tefBAD_AUTH' && tx.Account) {
+    extra.push(`Transaction Account: ${tx.Account}`);
+    extra.push('→ Make sure you have a wallet with that address imported, or clear the Account field to use the active wallet.');
+  }
+
+  return extra.length > 0 ? `${base}\n\n${extra.join('\n')}` : base;
+}
+
+/** Terminal engine_result codes that will never succeed — fail immediately. */
+function isTerminalFailure(code: string): boolean {
+  return /^(tef|tem|tel)/.test(code);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Submit with fail-fast + polling for validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Replaces client.submitAndWait with a two-phase approach:
+ *   Phase 1 — submit and get preliminary result fast (~500ms)
+ *             throw immediately for terminal failures (tef/tem/tel)
+ *   Phase 2 — poll for validated result (no more 20-second LLS wait on hard errors)
+ */
+async function submitWithFastFail(
+  client: XRPL.Client,
+  tx: Record<string, any>,
+  wallet: XRPL.Wallet,
+  onPrelim: (code: string, msg: string) => void,
+): Promise<any> {
+  // Phase 1: autofill + sign + submit
+  const filled = await client.autofill(tx as any);
+  const signed = wallet.sign(filled as any);
+
+  const submitRes = await client.request({
+    command:  'submit',
+    tx_blob:  signed.tx_blob,
+  } as any);
+
+  const prelim    = (submitRes.result as any)?.engine_result    as string ?? '';
+  const prelimMsg = (submitRes.result as any)?.engine_result_message as string ?? '';
+
+  onPrelim(prelim, prelimMsg);
+
+  if (isTerminalFailure(prelim)) {
+    throw new Error(humanizeError(prelim, prelimMsg, filled));
+  }
+
+  // Phase 2: poll for validated result
+  const hash          = signed.hash;
+  const lastLedgerSeq = (filled as any).LastLedgerSequence as number;
+
+  for (let attempt = 0; attempt < 80; attempt++) {
+    await new Promise(r => setTimeout(r, 1_000));
+
+    try {
+      const txRes = await client.request({ command: 'tx', transaction: hash } as any);
+      const txData = (txRes.result as any);
+      if (txData?.validated) {
+        return txData;
+      }
+    } catch {
+      // txnNotFound is normal while waiting
+    }
+
+    // Check if LastLedgerSequence has been exceeded
+    try {
+      const ledgerRes = await client.request({ command: 'ledger', ledger_index: 'validated' } as any);
+      const currentLedger = Number((ledgerRes.result as any)?.ledger_index ?? 0);
+      if (currentLedger > lastLedgerSeq) {
+        throw new Error(
+          `Transaction not included in ledger — LastLedgerSequence (${lastLedgerSeq}) exceeded ` +
+          `(current validated ledger: ${currentLedger}). ` +
+          'This usually means the network was congested or the Fee was too low. Try again.',
+        );
+      }
+    } catch (e: any) {
+      if (e.message?.includes('LastLedgerSequence')) throw e;
+    }
+  }
+
+  throw new Error('Transaction validation timeout after 80s.');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Batch flags
+// ─────────────────────────────────────────────────────────────────────────────
+
 const BATCH_MODE_FLAGS: Record<string, number> = {
   ALLORNOTHING: 0x00010000,
   ONLYONE:      0x00020000,
@@ -21,11 +163,11 @@ const BATCH_MODE_FLAGS: Record<string, number> = {
   INDEPENDENT:  0x00080000,
 };
 
-/**
- * Inner-batch transaction flag (GlobalFlags.tfInnerBatchTxn in xrpl.js).
- * Value: 0x40000000
- */
 const TF_INNER_BATCH_TXN = 0x40000000;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
 const NON_TX_TYPES = new Set([
   'ManualTrigger', 'AccountEventTrigger',
@@ -41,7 +183,6 @@ function getConfig(node: Node): Record<string, any> {
   return (node.data?.config as Record<string, any>) || {};
 }
 
-/** Build successors/predecessors graph from edges */
 function buildGraph(nodes: Node[], edges: Edge[]) {
   const successors   = new Map<string, string[]>();
   const predecessors = new Map<string, string[]>();
@@ -58,7 +199,6 @@ function buildGraph(nodes: Node[], edges: Edge[]) {
   return { successors, predecessors, nodeMap };
 }
 
-/** Evaluate a JS condition expression against prevOutput */
 function evalCondition(expr: string, output: any): boolean {
   try {
     // eslint-disable-next-line no-new-func
@@ -69,26 +209,37 @@ function evalCondition(expr: string, output: any): boolean {
 }
 
 /** Build XRPL transaction object from a node's config */
-function buildTx(node: Node, activeWallet: WalletInfo, innerBatch = false): Record<string, any> {
+function buildTx(
+  node: Node,
+  fallbackWallet: WalletInfo,
+  innerBatch = false,
+): Record<string, any> {
   const cfg  = getConfig(node);
   const type = node.type as string;
 
   const tx: Record<string, any> = {
     TransactionType: type,
-    Account: cfg.Account || activeWallet.address,
+    Account: cfg.Account || fallbackWallet.address,
   };
 
   if (innerBatch) {
     tx.Flags        = TF_INNER_BATCH_TXN;
     tx.Fee          = '0';
     tx.Sequence     = 0;
-    tx.SigningPubKey = '';     // empty string = no key (required by Batch spec)
-    tx.TxnSignature = null;   // null = unsigned inner tx (xrpl.js Batch validation requirement)
+    tx.SigningPubKey = '';
+    tx.TxnSignature = null;
   }
 
-  const skipKeys = new Set(['Account', 'LimitAmount_currency', 'LimitAmount_issuer', 'LimitAmount_value']);
+  const skipKeys = new Set([
+    'Account', 'LimitAmount_currency', 'LimitAmount_issuer', 'LimitAmount_value',
+  ]);
   for (const [k, v] of Object.entries(cfg)) {
     if (skipKeys.has(k) || v === '' || v === null || v === undefined) continue;
+    if (typeof v === 'boolean') {
+      // Boolean flag helpers — skip, they are handled via Flags bitmask in engine
+      // (node config uses named booleans for UX; engine keeps Flags as-is)
+      continue;
+    }
     if (innerBatch && (k === 'Fee' || k === 'Sequence')) continue;
     tx[k] = v;
   }
@@ -101,7 +252,10 @@ function buildTx(node: Node, activeWallet: WalletInfo, innerBatch = false): Reco
     };
   }
 
-  for (const field of ['SignerEntries', 'AuthAccounts', 'NFTokenOffers', 'PriceDataSeries', 'AcceptedCredentials', 'Memos']) {
+  for (const field of [
+    'SignerEntries', 'AuthAccounts', 'NFTokenOffers',
+    'PriceDataSeries', 'AcceptedCredentials', 'Memos', 'Signers', 'Paths',
+  ]) {
     if (typeof cfg[field] === 'string' && cfg[field].trim()) {
       try { tx[field] = JSON.parse(cfg[field]); } catch { /* keep as string */ }
     }
@@ -111,23 +265,57 @@ function buildTx(node: Node, activeWallet: WalletInfo, innerBatch = false): Reco
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Pre-flight: network gating
+// Wallet resolution: match cfg.Account to the right wallet from the list
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Finds the wallet that should sign a transaction.
+ * 1. If cfg.Account is set and matches a wallet in the list → use that wallet.
+ * 2. Otherwise → use the active wallet.
+ * Returns { walletInfo, xrplWallet } or throws if no seed available.
+ */
+function resolveSigningWallet(
+  cfgAccount: string | undefined,
+  allWallets: WalletInfo[],
+  activeWallet: WalletInfo,
+): { walletInfo: WalletInfo; xrplWallet: XRPL.Wallet } {
+  let walletInfo = activeWallet;
+
+  if (cfgAccount) {
+    const match = allWallets.find(w => w.address === cfgAccount);
+    if (match) {
+      walletInfo = match;
+    }
+    // If no match found, warn but fall back to active wallet.
+    // The error will surface as tefBAD_AUTH with a clear message.
+  }
+
+  if (!walletInfo.seed) {
+    throw new Error(
+      `Wallet "${walletInfo.name}" (${walletInfo.address}) has no seed. ` +
+      'Import the wallet with its seed/secret to sign transactions.',
+    );
+  }
+
+  return { walletInfo, xrplWallet: XRPL.Wallet.fromSeed(walletInfo.seed) };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Network gating pre-flight
 // ─────────────────────────────────────────────────────────────────────────────
 
 function preflightNetworkGating(nodes: Node[], network: NetworkType): void {
   if (network === 'devnet') return;
-
   const violations: string[] = [];
   for (const node of nodes) {
     const def = getNodeDef(node.type as string);
-    if (def?.networkGating === 'devnet-only') {
-      violations.push(`"${def.label}"`);
-    }
+    if (def?.networkGating === 'devnet-only') violations.push(`"${def.label}"`);
   }
   if (violations.length > 0) {
     throw new Error(
-      `Network mismatch: The following nodes require Devnet but you are connected to ${network}:\n` +
-      violations.join(', ') + '\n\nSwitch to Devnet in the Network panel to use these nodes.'
+      `Network mismatch: The following nodes require Devnet but you are on ${network}:\n` +
+      violations.join(', ') +
+      '\n\nSwitch to Devnet in the Network panel to use these nodes.',
     );
   }
 }
@@ -141,21 +329,17 @@ async function subscribeAccountEvent(
   address: string,
   onTx: (tx: any) => void,
 ): Promise<() => void> {
-  await client.request({ command: 'subscribe', accounts: [address] });
-
+  await client.request({ command: 'subscribe', accounts: [address] } as any);
   const handler = (event: any) => {
     if (
       event.type === 'transaction' &&
       (event.transaction?.Destination === address || event.transaction?.Account === address)
-    ) {
-      onTx(event.transaction);
-    }
+    ) onTx(event.transaction);
   };
-
   client.on('transaction', handler);
   return () => {
     client.off('transaction', handler);
-    client.request({ command: 'unsubscribe', accounts: [address] }).catch(() => {});
+    client.request({ command: 'unsubscribe', accounts: [address] } as any).catch(() => {});
   };
 }
 
@@ -167,43 +351,40 @@ function waitForNextLedger(client: XRPL.Client): Promise<void> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       client.off('ledgerClosed', handler);
-      client.request({ command: 'unsubscribe', streams: ['ledger'] }).catch(() => {});
+      client.request({ command: 'unsubscribe', streams: ['ledger'] } as any).catch(() => {});
       reject(new Error('WaitForLedger: no ledger closed within 30s'));
     }, 30_000);
-
     const handler = () => {
       clearTimeout(timeout);
       client.off('ledgerClosed', handler);
-      client.request({ command: 'unsubscribe', streams: ['ledger'] }).catch(() => {});
+      client.request({ command: 'unsubscribe', streams: ['ledger'] } as any).catch(() => {});
       resolve();
     };
-
-    client.request({ command: 'subscribe', streams: ['ledger'] })
+    client.request({ command: 'subscribe', streams: ['ledger'] } as any)
       .then(() => client.on('ledgerClosed', handler))
       .catch(reject);
   });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BatchContainer: collect children by parentId, build + submit Batch envelope
+// BatchContainer
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function executeBatch(
   batchNode: Node,
   allNodes: Node[],
   client: XRPL.Client,
-  wallet: XRPL.Wallet,
-  activeWalletInfo: WalletInfo,
+  activeWallet: WalletInfo,
+  allWallets: WalletInfo[],
   cbs: ExecutionCallbacks,
 ): Promise<any> {
-  const label  = getNodeLabel(batchNode);
-  const cfg    = getConfig(batchNode);
-  const mode   = cfg.ExecutionMode || 'ALLORNOTHING';
+  const label    = getNodeLabel(batchNode);
+  const cfg      = getConfig(batchNode);
+  const mode     = cfg.ExecutionMode || 'ALLORNOTHING';
   const modeFlag = BATCH_MODE_FLAGS[mode] ?? BATCH_MODE_FLAGS.ALLORNOTHING;
 
-  // Collect inner tx nodes: those whose parentId === batchNode.id (group children)
   const innerNodes = allNodes.filter(
-    n => n.parentId === batchNode.id && !NON_TX_TYPES.has(n.type as string)
+    n => n.parentId === batchNode.id && !NON_TX_TYPES.has(n.type as string),
   );
 
   cbs.addLogEntry({
@@ -215,7 +396,7 @@ async function executeBatch(
   if (innerNodes.length === 0) {
     throw new Error(
       'BatchContainer has no inner transaction nodes. ' +
-      'Drop tx nodes inside the batch container group on the canvas.'
+      'Drop tx nodes inside the batch container group on the canvas.',
     );
   }
   if (innerNodes.length > 8) {
@@ -223,12 +404,14 @@ async function executeBatch(
   }
 
   const rawTransactions = innerNodes.map(n => ({
-    RawTransaction: buildTx(n, activeWalletInfo, true),
+    RawTransaction: buildTx(n, activeWallet, true),
   }));
+
+  const { walletInfo, xrplWallet } = resolveSigningWallet(undefined, allWallets, activeWallet);
 
   const batchTx: any = {
     TransactionType: 'Batch',
-    Account: activeWalletInfo.address,
+    Account: walletInfo.address,
     RawTransactions: rawTransactions,
     Flags: modeFlag,
   };
@@ -239,21 +422,27 @@ async function executeBatch(
     status: 'running',
   });
 
-  const result = await client.submitAndWait(batchTx, { wallet });
-  const hash     = (result.result as any)?.hash || '';
-  const txResult = (result.result?.meta as any)?.TransactionResult || 'unknown';
-
-  if (txResult === 'tesSUCCESS') {
+  const result = await submitWithFastFail(client, batchTx, xrplWallet, (prelim, msg) => {
     cbs.addLogEntry({
       nodeId: batchNode.id, nodeLabel: label,
-      message: `Batch succeeded (${txResult})`,
-      txHash: hash, status: 'success',
+      message: `Prelim: ${prelim}${msg ? ` — ${msg}` : ''}`,
+      status: /^tes/.test(prelim) ? 'success' : isTerminalFailure(prelim) ? 'failed' : 'running',
     });
-  } else {
+  });
+
+  const txResult = result?.meta?.TransactionResult || 'unknown';
+
+  if (txResult !== 'tesSUCCESS') {
     throw new Error(`Batch failed: ${txResult}`);
   }
 
-  return result.result;
+  cbs.addLogEntry({
+    nodeId: batchNode.id, nodeLabel: label,
+    message: `Batch succeeded (${txResult})`,
+    txHash: result?.hash || '', status: 'success',
+  });
+
+  return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -265,8 +454,8 @@ async function executeNode(
   prevOutput: any,
   allNodes: Node[],
   client: XRPL.Client,
-  wallet: XRPL.Wallet,
-  activeWalletInfo: WalletInfo,
+  activeWallet: WalletInfo,
+  allWallets: WalletInfo[],
   cbs: ExecutionCallbacks,
   innerNodeIds: Set<string>,
   nodeMap: Map<string, Node>,
@@ -280,7 +469,7 @@ async function executeNode(
   cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: 'Running...', status: 'running' });
 
   try {
-    // ── Triggers ───────────────────────────────────────────────────────────
+    // ── Triggers ─────────────────────────────────────────────────────────
     if (type === 'ManualTrigger') {
       cbs.setNodeStatus(node.id, 'success');
       cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: 'Triggered', status: 'success' });
@@ -290,29 +479,25 @@ async function executeNode(
     if (type === 'AccountEventTrigger') {
       const watchAddr = cfg.WatchAddress;
       if (!watchAddr) throw new Error('WatchAddress is required for AccountEventTrigger');
-
       cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `Subscribing to ${watchAddr}...`, status: 'running' });
-
       const output = await new Promise<any>((resolve, reject) => {
         let cleanup: (() => void) | undefined;
         const timeout = setTimeout(() => {
           if (cleanup) cleanup();
           reject(new Error('AccountEventTrigger: no transaction received within 60s'));
         }, 60_000);
-
         subscribeAccountEvent(client, watchAddr, (tx) => {
           clearTimeout(timeout);
           if (cleanup) cleanup();
           resolve(tx);
         }).then(fn => { cleanup = fn; }).catch(reject);
       });
-
       cbs.setNodeStatus(node.id, 'success');
       cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `Received tx: ${output.hash || ''}`, status: 'success' });
       return { output };
     }
 
-    // ── Control flow ───────────────────────────────────────────────────────
+    // ── Control flow ──────────────────────────────────────────────────────
     if (type === 'ConditionBranch') {
       const expr   = cfg.Expression || 'false';
       const result = evalCondition(expr, prevOutput);
@@ -323,13 +508,16 @@ async function executeNode(
 
     if (type === 'ParallelSplit' || type === 'SyncJoin') {
       cbs.setNodeStatus(node.id, 'success');
-      cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: type === 'ParallelSplit' ? 'Fan-out' : 'Join', status: 'success' });
+      cbs.addLogEntry({
+        nodeId: node.id, nodeLabel: label,
+        message: type === 'ParallelSplit' ? 'Fan-out' : 'Join complete',
+        status: 'success',
+      });
       return { output: prevOutput };
     }
 
     if (type === 'Delay') {
       const delayMode = cfg.DelayMode || (cfg.WaitForLedger ? 'ledger-close' : 'ms');
-
       if (delayMode === 'ledger-close') {
         cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: 'Waiting for next ledger close...', status: 'running' });
         await waitForNextLedger(client);
@@ -337,6 +525,7 @@ async function executeNode(
         cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: 'Ledger closed', status: 'success' });
       } else {
         const ms = Number(cfg.Duration) || 1000;
+        cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `Waiting ${ms}ms...`, status: 'running' });
         await new Promise(r => setTimeout(r, ms));
         cbs.setNodeStatus(node.id, 'success');
         cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `Delayed ${ms}ms`, status: 'success' });
@@ -345,9 +534,8 @@ async function executeNode(
     }
 
     if (type === 'Loop') {
-      // Handled by the graph traversal layer (runNode), not here
       cbs.setNodeStatus(node.id, 'success');
-      cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `Loop started`, status: 'success' });
+      cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: 'Loop started', status: 'success' });
       return { output: prevOutput };
     }
 
@@ -360,52 +548,79 @@ async function executeNode(
       return { output: prevOutput };
     }
 
-    // ── BatchContainer (group node) ─────────────────────────────────────────
+    // ── BatchContainer ─────────────────────────────────────────────────────
     if (type === 'BatchContainer') {
       cbs.setNodeStatus(node.id, 'running');
-
-      // Mark group children so they are skipped in normal traversal
       const childNodes = allNodes.filter(
-        n => n.parentId === node.id && !NON_TX_TYPES.has(n.type as string)
+        n => n.parentId === node.id && !NON_TX_TYPES.has(n.type as string),
       );
       for (const cn of childNodes) innerNodeIds.add(cn.id);
 
-      const batchOutput = await executeBatch(node, allNodes, client, wallet, activeWalletInfo, cbs);
+      const batchOutput = await executeBatch(
+        node, allNodes, client, activeWallet, allWallets, cbs,
+      );
 
       for (const cn of childNodes) {
         cbs.setNodeStatus(cn.id, 'success');
         cbs.addLogEntry({ nodeId: cn.id, nodeLabel: getNodeLabel(cn), message: 'Included in Batch', status: 'success' });
       }
-
       cbs.setNodeStatus(node.id, 'success');
       return { output: batchOutput };
     }
 
-    // ── Transaction node ────────────────────────────────────────────────────
-    const tx = buildTx(node, activeWalletInfo, false);
+    // ── Transaction node ──────────────────────────────────────────────────
+    // Resolve the signing wallet: match cfg.Account to an imported wallet
+    const { walletInfo, xrplWallet } = resolveSigningWallet(cfg.Account, allWallets, activeWallet);
 
-    cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `Submitting ${type}...`, status: 'running' });
+    const tx = buildTx(node, walletInfo, false);
 
-    const result = await client.submitAndWait(tx as any, { wallet });
-    const hash     = (result.result as any)?.hash || '';
-    const txResult = (result.result?.meta as any)?.TransactionResult || 'unknown';
+    // Log which wallet is signing (helpful for multi-wallet debugging)
+    const signerNote = walletInfo.address !== activeWallet.address
+      ? ` (signing as ${walletInfo.name}: ${walletInfo.address.slice(0, 8)}…)`
+      : '';
+
+    cbs.addLogEntry({
+      nodeId: node.id, nodeLabel: label,
+      message: `Submitting ${type}${signerNote}…`,
+      status: 'running',
+    });
+
+    const result = await submitWithFastFail(client, tx, xrplWallet, (prelim, msg) => {
+      // Show the preliminary engine result immediately in the log
+      const prelimStatus = /^tes/.test(prelim) ? 'success'
+        : isTerminalFailure(prelim)             ? 'failed'
+        : 'running';
+
+      cbs.addLogEntry({
+        nodeId: node.id, nodeLabel: label,
+        message: `Prelim: ${prelim}${msg ? ` — ${msg}` : ''}`,
+        status: prelimStatus,
+      });
+    });
+
+    const hash     = result?.hash || '';
+    const txResult = result?.meta?.TransactionResult || 'unknown';
 
     if (txResult === 'tesSUCCESS') {
       cbs.setNodeStatus(node.id, 'success');
       cbs.addLogEntry({
         nodeId: node.id, nodeLabel: label,
-        message: `${type} succeeded (${txResult})`,
+        message: `✓ ${type} succeeded (${txResult})`,
         txHash: hash, status: 'success',
       });
     } else {
-      throw new Error(`Transaction failed: ${txResult}`);
+      throw new Error(
+        TX_ERROR_HELP[txResult]
+          ? `${txResult}: ${TX_ERROR_HELP[txResult]}`
+          : `Transaction failed: ${txResult}`,
+      );
     }
 
-    return { output: result.result };
+    return { output: result };
   } catch (err: any) {
     const msg = err?.message || String(err);
     cbs.setNodeStatus(node.id, 'failed', msg);
-    cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `Error: ${msg}`, status: 'failed' });
+    cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `✗ ${msg}`, status: 'failed' });
     throw err;
   }
 }
@@ -419,24 +634,31 @@ export async function runWorkflow(
   edges: Edge[],
   client: XRPL.Client,
   activeWalletInfo: WalletInfo,
-  walletSeed: string,
+  walletSeed: string,           // kept for backward compat — resolved via allWallets now
   cbs: ExecutionCallbacks,
+  allWallets: WalletInfo[] = [],
 ): Promise<void> {
   preflightNetworkGating(nodes, cbs.network);
 
+  // Ensure allWallets contains at least the active wallet
+  const walletList = allWallets.length > 0
+    ? allWallets
+    : [activeWalletInfo];
+
   const { successors, predecessors, nodeMap } = buildGraph(nodes, edges);
-  const wallet = XRPL.Wallet.fromSeed(walletSeed);
 
   const triggerTypes = new Set(['ManualTrigger', 'AccountEventTrigger']);
   const triggerNodes = nodes.filter(n => triggerTypes.has(n.type as string));
 
   if (triggerNodes.length === 0) {
-    throw new Error('No trigger node found. Add a Manual Trigger or Account Event trigger to start the workflow.');
+    throw new Error(
+      'No trigger node found. Add a Manual Trigger or Account Event trigger to start the workflow.',
+    );
   }
 
-  // Group-child nodes are skipped during normal graph traversal; the BatchContainer handles them
+  // Group-child nodes are skipped during normal graph traversal
   const innerBatchIds = new Set<string>(
-    nodes.filter(n => n.parentId !== undefined).map(n => n.id)
+    nodes.filter(n => n.parentId !== undefined).map(n => n.id),
   );
 
   const inFlight = new Map<string, Promise<any>>();
@@ -449,31 +671,28 @@ export async function runWorkflow(
     if (!node) return input;
 
     const promise = executeNode(
-      node, input, nodes, client, wallet, activeWalletInfo, cbs, innerBatchIds, nodeMap, successors,
+      node, input, nodes, client, activeWalletInfo, walletList, cbs,
+      innerBatchIds, nodeMap, successors,
     ).then(({ output, conditionResult }) => {
       const succs = successors.get(nodeId) || [];
 
-      // ConditionBranch: route by handle label
       if ((node.type as string) === 'ConditionBranch') {
-        const trueEdges  = edges.filter(e => e.source === nodeId && (e.sourceHandle === 'true'  || !e.sourceHandle));
+        const trueEdges  = edges.filter(e => e.source === nodeId && (e.sourceHandle === 'true' || !e.sourceHandle));
         const falseEdges = edges.filter(e => e.source === nodeId && e.sourceHandle === 'false');
         const nextEdges  = conditionResult ? trueEdges : falseEdges;
         return Promise.all(nextEdges.map(e => runNode(e.target, output)));
       }
 
-      // ParallelSplit: all successors concurrently
       if ((node.type as string) === 'ParallelSplit') {
         return Promise.all(succs.map(sid => runNode(sid, output)));
       }
 
-      // SyncJoin: wait for all predecessors before continuing
       if ((node.type as string) === 'SyncJoin') {
         const preds = predecessors.get(nodeId) || [];
         return Promise.all(preds.map(pid => inFlight.get(pid) || Promise.resolve()))
           .then(() => Promise.all(succs.map(sid => runNode(sid, output))));
       }
 
-      // Loop: count or until-condition
       if ((node.type as string) === 'Loop') {
         const loopMode = getConfig(node).LoopMode || 'count';
         const maxIter  = Number(getConfig(node).Iterations) || 1;
@@ -484,15 +703,11 @@ export async function runWorkflow(
           let iter = 0;
           const MAX_SAFETY = 100;
           let loopOutput = output;
-
           while (true) {
             if (loopMode === 'count' && iter >= maxIter) break;
             if (loopMode === 'until-condition' && condExpr && evalCondition(condExpr, loopOutput)) break;
-            if (iter >= MAX_SAFETY) break; // safety cap
-
+            if (iter >= MAX_SAFETY) break;
             if (iter > 0 && delay > 0) await new Promise(r => setTimeout(r, delay));
-
-            // Clear cached results for successor nodes before each re-run
             for (const sid of succs) inFlight.delete(sid);
             const results = await Promise.all(succs.map(sid => runNode(sid, loopOutput)));
             loopOutput = results[0] ?? loopOutput;
@@ -502,19 +717,18 @@ export async function runWorkflow(
         return run();
       }
 
-      // BatchContainer: successors that are NOT group children run after the batch
       if ((node.type as string) === 'BatchContainer') {
         const afterBatch = succs.filter(sid => !innerBatchIds.has(sid));
         return afterBatch.reduce(
           (chain, sid) => chain.then(() => runNode(sid, output)),
-          Promise.resolve() as Promise<any>
+          Promise.resolve() as Promise<any>,
         );
       }
 
       // Default: sequential
       return succs.reduce(
         (chain, sid) => chain.then(() => runNode(sid, output)),
-        Promise.resolve() as Promise<any>
+        Promise.resolve() as Promise<any>,
       );
     });
 

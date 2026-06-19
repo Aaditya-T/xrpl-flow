@@ -115,7 +115,8 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
           addLogEntry,
           getExplorerUrl: (hash) => `${EXPLORER_URLS[network]}${hash}`,
           network,
-        }
+        },
+        wallets,
       );
     } catch (e: any) {
       setRunError(e.message || 'Run failed');
