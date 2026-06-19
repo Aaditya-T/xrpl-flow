@@ -11,6 +11,69 @@ export type ExecutionCallbacks = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Abort helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+function checkAbort(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException('Workflow stopped by user.', 'AbortError');
+  }
+}
+
+function isAbortError(err: any): boolean {
+  return err?.name === 'AbortError';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pre-run field validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ValidationError {
+  nodeId:     string;
+  nodeLabel:  string;
+  fieldLabel: string;
+}
+
+/**
+ * Validates that all required fields on every tx node are filled.
+ * Account is excluded — it falls back to the active wallet when blank.
+ * Returns an array of errors (empty = all good).
+ */
+export function validateWorkflow(nodes: Node[]): ValidationError[] {
+  const errors: ValidationError[] = [];
+
+  for (const node of nodes) {
+    if (NON_TX_TYPES.has(node.type as string)) continue;
+    const def = getNodeDef(node.type as string);
+    if (!def) continue;
+
+    const cfg   = getConfig(node);
+    const label = getNodeLabel(node);
+
+    for (const field of def.fields) {
+      if (!field.required) continue;
+      if (field.name === 'Account') continue; // fallback to active wallet
+
+      const val = cfg[field.name];
+
+      if (field.type === 'amount') {
+        const filled =
+          val?.type === 'xrp'   ? String(val.drops ?? '').trim() !== '' :
+          val?.type === 'token' ? Boolean(val.currency && val.issuer && val.value) :
+          typeof val === 'string' ? val.trim() !== '' : false;
+        if (!filled) errors.push({ nodeId: node.id, nodeLabel: label, fieldLabel: field.label });
+      } else {
+        if (val === '' || val === null || val === undefined) {
+          errors.push({ nodeId: node.id, nodeLabel: label, fieldLabel: field.label });
+        }
+      }
+    }
+  }
+
+  return errors;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Error code → human explanation
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -97,10 +160,15 @@ async function submitWithFastFail(
   tx: Record<string, any>,
   wallet: XRPL.Wallet,
   onPrelim: (code: string, msg: string) => void,
+  signal?: AbortSignal,
 ): Promise<any> {
+  checkAbort(signal);
+
   // Phase 1: autofill + sign + submit
   const filled = await client.autofill(tx as any);
   const signed = wallet.sign(filled as any);
+
+  checkAbort(signal);
 
   const submitRes = await client.request({
     command:  'submit',
@@ -121,15 +189,19 @@ async function submitWithFastFail(
   const lastLedgerSeq = (filled as any).LastLedgerSequence as number;
 
   for (let attempt = 0; attempt < 80; attempt++) {
-    await new Promise(r => setTimeout(r, 1_000));
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, 1_000);
+      signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Workflow stopped by user.', 'AbortError')); }, { once: true });
+    });
+
+    checkAbort(signal);
 
     try {
       const txRes = await client.request({ command: 'tx', transaction: hash } as any);
       const txData = (txRes.result as any);
-      if (txData?.validated) {
-        return txData;
-      }
-    } catch {
+      if (txData?.validated) return txData;
+    } catch (e: any) {
+      if (isAbortError(e)) throw e;
       // txnNotFound is normal while waiting
     }
 
@@ -145,7 +217,7 @@ async function submitWithFastFail(
         );
       }
     } catch (e: any) {
-      if (e.message?.includes('LastLedgerSequence')) throw e;
+      if (e.message?.includes('LastLedgerSequence') || isAbortError(e)) throw e;
     }
   }
 
@@ -402,7 +474,9 @@ async function executeBatch(
   activeWallet: WalletInfo,
   allWallets: WalletInfo[],
   cbs: ExecutionCallbacks,
+  signal?: AbortSignal,
 ): Promise<any> {
+  checkAbort(signal);
   const label    = getNodeLabel(batchNode);
   const cfg      = getConfig(batchNode);
   const mode     = cfg.ExecutionMode || 'ALLORNOTHING';
@@ -453,7 +527,7 @@ async function executeBatch(
       message: `Prelim: ${prelim}${msg ? ` — ${msg}` : ''}`,
       status: /^tes/.test(prelim) ? 'success' : isTerminalFailure(prelim) ? 'failed' : 'running',
     });
-  });
+  }, signal);
 
   const txResult = result?.meta?.TransactionResult || 'unknown';
 
@@ -485,7 +559,10 @@ async function executeNode(
   innerNodeIds: Set<string>,
   nodeMap: Map<string, Node>,
   successors: Map<string, string[]>,
+  signal?: AbortSignal,
 ): Promise<{ output: any; conditionResult?: boolean }> {
+  checkAbort(signal);
+
   const type  = node.type as string;
   const label = getNodeLabel(node);
   const cfg   = getConfig(node);
@@ -511,6 +588,11 @@ async function executeNode(
           if (cleanup) cleanup();
           reject(new Error('AccountEventTrigger: no transaction received within 60s'));
         }, 60_000);
+        signal?.addEventListener('abort', () => {
+          clearTimeout(timeout);
+          if (cleanup) cleanup();
+          reject(new DOMException('Workflow stopped by user.', 'AbortError'));
+        }, { once: true });
         subscribeAccountEvent(client, watchAddr, (tx) => {
           clearTimeout(timeout);
           if (cleanup) cleanup();
@@ -551,7 +633,13 @@ async function executeNode(
       } else {
         const ms = Number(cfg.Duration) || 1000;
         cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `Waiting ${ms}ms...`, status: 'running' });
-        await new Promise(r => setTimeout(r, ms));
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, ms);
+          signal?.addEventListener('abort', () => {
+            clearTimeout(timer);
+            reject(new DOMException('Workflow stopped by user.', 'AbortError'));
+          }, { once: true });
+        });
         cbs.setNodeStatus(node.id, 'success');
         cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `Delayed ${ms}ms`, status: 'success' });
       }
@@ -582,7 +670,7 @@ async function executeNode(
       for (const cn of childNodes) innerNodeIds.add(cn.id);
 
       const batchOutput = await executeBatch(
-        node, allNodes, client, activeWallet, allWallets, cbs,
+        node, allNodes, client, activeWallet, allWallets, cbs, signal,
       );
 
       for (const cn of childNodes) {
@@ -621,7 +709,7 @@ async function executeNode(
         message: `Prelim: ${prelim}${msg ? ` — ${msg}` : ''}`,
         status: prelimStatus,
       });
-    });
+    }, signal);
 
     const hash     = result?.hash || '';
     const txResult = result?.meta?.TransactionResult || 'unknown';
@@ -643,6 +731,7 @@ async function executeNode(
 
     return { output: result };
   } catch (err: any) {
+    if (isAbortError(err)) throw err; // propagate cleanly — don't mark node as failed
     const msg = err?.message || String(err);
     cbs.setNodeStatus(node.id, 'failed', msg);
     cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `✗ ${msg}`, status: 'failed' });
@@ -662,7 +751,9 @@ export async function runWorkflow(
   walletSeed: string,           // kept for backward compat — resolved via allWallets now
   cbs: ExecutionCallbacks,
   allWallets: WalletInfo[] = [],
+  signal?: AbortSignal,
 ): Promise<void> {
+  checkAbort(signal);
   preflightNetworkGating(nodes, cbs.network);
 
   // Ensure allWallets contains at least the active wallet
@@ -689,6 +780,7 @@ export async function runWorkflow(
   const inFlight = new Map<string, Promise<any>>();
 
   async function runNode(nodeId: string, input: any): Promise<any> {
+    checkAbort(signal);
     if (innerBatchIds.has(nodeId)) return input;
     if (inFlight.has(nodeId)) return inFlight.get(nodeId);
 
@@ -697,7 +789,7 @@ export async function runWorkflow(
 
     const promise = executeNode(
       node, input, nodes, client, activeWalletInfo, walletList, cbs,
-      innerBatchIds, nodeMap, successors,
+      innerBatchIds, nodeMap, successors, signal,
     ).then(({ output, conditionResult }) => {
       const succs = successors.get(nodeId) || [];
 

@@ -1,10 +1,9 @@
 import { useState, useRef } from 'react';
-import { Play, Save, FolderOpen, Download, Upload, Pencil, Check, X, Wifi, WifiOff } from 'lucide-react';
+import { Play, Square, Save, Download, Upload, Pencil, Check, X, Wifi, WifiOff } from 'lucide-react';
 import { useWorkflowStore } from '@/store/workflowStore';
-import { NETWORK_URLS } from '@/lib/xrplClient';
+import { NETWORK_URLS, EXPLORER_URLS } from '@/lib/xrplClient';
 import * as XRPL from 'xrpl';
-import { runWorkflow } from '@/lib/workflowEngine';
-import { EXPLORER_URLS } from '@/lib/xrplClient';
+import { runWorkflow, validateWorkflow } from '@/lib/workflowEngine';
 import { cn } from '@/lib/utils';
 
 function XRPLLogo() {
@@ -22,7 +21,9 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
   const [nameInput, setNameInput] = useState('');
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState('');
+  const [validationErrors, setValidationErrors] = useState<{ nodeLabel: string; fieldLabel: string }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const {
     currentWorkflowName, setCurrentWorkflowName, saveWorkflow, loadWorkflow,
@@ -97,12 +98,28 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
     }
   };
 
+  const handleStop = () => {
+    abortRef.current?.abort();
+  };
+
   const handleRun = async () => {
     if (!canRun || !xrplClient || !activeWallet?.seed) {
       setRunError(!activeWallet?.seed ? 'Active wallet has no seed (import or generate a wallet)' : 'Connect to XRPL first');
       setTimeout(() => setRunError(''), 4000);
       return;
     }
+
+    // Pre-run field validation
+    const errors = validateWorkflow(nodes);
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+      return;
+    }
+    setValidationErrors([]);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setRunning(true);
     setRunError('');
     resetNodeStatuses();
@@ -117,11 +134,17 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
           network,
         },
         wallets,
+        controller.signal,
       );
     } catch (e: any) {
-      setRunError(e.message || 'Run failed');
-      setTimeout(() => setRunError(''), 5000);
+      if (e?.name === 'AbortError') {
+        addLogEntry({ nodeId: '', nodeLabel: 'Workflow', message: '⏹ Stopped by user', status: 'failed' });
+      } else {
+        setRunError(e.message || 'Run failed');
+        setTimeout(() => setRunError(''), 5000);
+      }
     } finally {
+      abortRef.current = null;
       setRunning(false);
     }
   };
@@ -223,6 +246,28 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
       {/* Spacer */}
       <div className="flex-1" />
 
+      {/* Validation errors */}
+      {validationErrors.length > 0 && (
+        <div className="flex items-start gap-1.5 bg-amber-900/30 border border-amber-700/50 rounded px-2.5 py-1.5 max-w-[340px]">
+          <span className="text-amber-400 text-[10px] flex-shrink-0 mt-px">⚠</span>
+          <div className="min-w-0">
+            <p className="text-[10px] text-amber-300 font-medium leading-tight mb-0.5">Missing required fields:</p>
+            <ul className="space-y-0">
+              {validationErrors.map((e, i) => (
+                <li key={i} className="text-[9px] text-amber-400/80 font-mono truncate">
+                  {e.nodeLabel} → {e.fieldLabel}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <button
+            type="button"
+            onClick={() => setValidationErrors([])}
+            className="text-amber-600 hover:text-amber-400 flex-shrink-0 ml-1"
+          ><X size={9} /></button>
+        </div>
+      )}
+
       {/* Run error */}
       {runError && (
         <span className="text-[10px] text-red-400 font-mono truncate max-w-[200px]">{runError}</span>
@@ -265,22 +310,34 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
         </span>
       </div>
 
-      {/* Run button */}
-      <button
-        type="button"
-        onClick={handleRun}
-        disabled={!canRun || running}
-        data-testid="run-workflow"
-        className={cn(
-          'flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-semibold transition-colors',
-          canRun && !running
-            ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
-            : 'bg-[#1e2130] text-slate-600 cursor-not-allowed',
-        )}
-      >
-        <Play size={11} fill="currentColor" />
-        {running ? 'Running...' : 'Run'}
-      </button>
+      {/* Run / Stop button */}
+      {running ? (
+        <button
+          type="button"
+          onClick={handleStop}
+          data-testid="stop-workflow"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-semibold transition-colors bg-red-700 hover:bg-red-600 text-white cursor-pointer"
+        >
+          <Square size={11} fill="currentColor" />
+          Stop
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={handleRun}
+          disabled={!canRun}
+          data-testid="run-workflow"
+          className={cn(
+            'flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-semibold transition-colors',
+            canRun
+              ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+              : 'bg-[#1e2130] text-slate-600 cursor-not-allowed',
+          )}
+        >
+          <Play size={11} fill="currentColor" />
+          Run
+        </button>
+      )}
     </header>
   );
 }
