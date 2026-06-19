@@ -1,9 +1,12 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import * as XRPL from 'xrpl';
-import { Plus, Key, Droplets, Copy, Check, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, Key, Droplets, Copy, Check, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { useWorkflowStore } from '@/store/workflowStore';
 import { NETWORK_URLS, EXPLORER_URLS, fundWalletWithFaucet } from '@/lib/xrplClient';
 import { cn } from '@/lib/utils';
+
+/** Balance auto-refresh interval in ms */
+const BALANCE_POLL_MS = 30_000;
 
 function truncate(s: string, len = 14) {
   if (s.length <= len) return s;
@@ -25,20 +28,28 @@ function CopyButton({ text }: { text: string }) {
 }
 
 function WalletCard({ wallet }: { wallet: { id: string; name: string; address: string; publicKey: string; seed?: string; balance?: string } }) {
-  const { activeWalletId, setActiveWallet, updateWalletBalance, network, xrplClient } = useWorkflowStore();
+  const { activeWalletId, setActiveWallet, updateWalletBalance, removeWallet, network, xrplClient } = useWorkflowStore();
   const [expanded, setExpanded] = useState(false);
   const isActive = wallet.id === activeWalletId;
 
-  const fetchBalance = async () => {
+  const fetchBalance = useCallback(async () => {
     if (!xrplClient) return;
     try {
       const res = await xrplClient.request({ command: 'account_info', account: wallet.address, ledger_index: 'validated' });
       const bal = (Number((res.result.account_data as any).Balance) / 1_000_000).toFixed(6);
       updateWalletBalance(wallet.id, bal);
     } catch {
-      updateWalletBalance(wallet.id, '0');
+      updateWalletBalance(wallet.id, '—');
     }
-  };
+  }, [xrplClient, wallet.id, wallet.address, updateWalletBalance]);
+
+  // Auto-poll balance when connected
+  useEffect(() => {
+    if (!xrplClient) return;
+    fetchBalance();
+    const interval = setInterval(fetchBalance, BALANCE_POLL_MS);
+    return () => clearInterval(interval);
+  }, [xrplClient, fetchBalance]);
 
   return (
     <div
@@ -98,16 +109,26 @@ function WalletCard({ wallet }: { wallet: { id: string; name: string; address: s
               <CopyButton text={wallet.publicKey} />
             </div>
           </div>
-          {!isActive && (
+          <div className="flex gap-1.5 mt-1">
+            {!isActive && (
+              <button
+                type="button"
+                onClick={() => setActiveWallet(wallet.id)}
+                data-testid={`set-active-${wallet.id}`}
+                className="flex-1 py-1 text-[10px] text-blue-400 border border-blue-700/40 rounded hover:bg-blue-900/20 transition-colors"
+              >
+                Set as Active
+              </button>
+            )}
             <button
               type="button"
-              onClick={() => setActiveWallet(wallet.id)}
-              data-testid={`set-active-${wallet.id}`}
-              className="w-full py-1 text-[10px] text-blue-400 border border-blue-700/40 rounded hover:bg-blue-900/20 transition-colors mt-1"
+              onClick={() => removeWallet(wallet.id)}
+              className="py-1 px-2 text-[10px] text-red-400/60 border border-red-900/30 rounded hover:bg-red-900/20 hover:text-red-400 transition-colors"
+              title="Remove wallet"
             >
-              Set as Active
+              <Trash2 size={9} />
             </button>
-          )}
+          </div>
         </div>
       )}
     </div>
@@ -122,7 +143,7 @@ export function WalletPanel() {
   const [error, setError] = useState('');
 
   const {
-    wallets, activeWalletId, addWallet,
+    wallets, activeWalletId, addWallet, updateWalletBalance,
     network, setNetwork, xrplClient, connectionStatus,
     setConnectionStatus, setClient,
   } = useWorkflowStore();
@@ -161,22 +182,42 @@ export function WalletPanel() {
     }
   };
 
+  /**
+   * Fund via faucet:
+   * - If there is an active wallet → fund that existing address (no new wallet created)
+   * - If no wallets exist → create a fresh faucet wallet and add it
+   */
   const fundWallet = async () => {
     if (network === 'mainnet') return;
     setFaucetLoading(true);
     setError('');
     try {
-      const res = await fundWalletWithFaucet(network);
-      const acct = res.account;
-      const w = XRPL.Wallet.fromSeed(acct.secret);
-      addWallet({
-        id: crypto.randomUUID(),
-        name: `Faucet ${wallets.length + 1}`,
-        address: acct.classicAddress || w.address,
-        publicKey: w.publicKey,
-        seed: acct.secret,
-        balance: '1000',
-      });
+      if (activeWallet) {
+        // Fund the currently active wallet address
+        await fundWalletWithFaucet(network, activeWallet.address);
+        // Refresh its balance after a short delay for the ledger to close
+        setTimeout(async () => {
+          if (!xrplClient) return;
+          try {
+            const res = await xrplClient.request({ command: 'account_info', account: activeWallet.address, ledger_index: 'validated' });
+            const bal = (Number((res.result.account_data as any).Balance) / 1_000_000).toFixed(6);
+            updateWalletBalance(activeWallet.id, bal);
+          } catch { /* account may not exist yet */ }
+        }, 4000);
+      } else {
+        // No active wallet — mint a new one via the faucet
+        const res = await fundWalletWithFaucet(network);
+        const acct = res.account;
+        const w = XRPL.Wallet.fromSeed(acct.secret);
+        addWallet({
+          id: crypto.randomUUID(),
+          name: `Faucet ${wallets.length + 1}`,
+          address: acct.classicAddress || w.address,
+          publicKey: w.publicKey,
+          seed: acct.secret,
+          balance: '1000',
+        });
+      }
     } catch (e: any) {
       setError(e.message || 'Faucet failed');
     } finally {
@@ -186,7 +227,6 @@ export function WalletPanel() {
 
   const connect = async (net: typeof network) => {
     setError('');
-    // Disconnect existing
     if (xrplClient) {
       try { await xrplClient.disconnect(); } catch { /* ignore */ }
       setClient(null);
@@ -213,9 +253,7 @@ export function WalletPanel() {
 
   const handleNetworkChange = async (net: typeof network) => {
     setNetwork(net);
-    if (connectionStatus === 'connected') {
-      await connect(net);
-    }
+    if (connectionStatus === 'connected') await connect(net);
   };
 
   const statusColor = {
@@ -234,7 +272,7 @@ export function WalletPanel() {
 
   return (
     <div className="flex flex-col h-full" data-testid="wallet-panel">
-      {/* Tabs */}
+      {/* Sub-tabs */}
       <div className="flex border-b border-[#1e2130] flex-shrink-0">
         {(['wallets', 'network'] as const).map(t => (
           <button
@@ -253,7 +291,6 @@ export function WalletPanel() {
 
       {tab === 'wallets' && (
         <div className="flex-1 overflow-y-auto px-3 py-2 space-y-3">
-          {/* Wallet list */}
           {wallets.length === 0 ? (
             <p className="text-[11px] text-slate-600 text-center py-4">No wallets yet</p>
           ) : (
@@ -268,7 +305,6 @@ export function WalletPanel() {
             </div>
           )}
 
-          {/* Actions */}
           <div className="space-y-1.5 pt-1">
             <button
               type="button"
@@ -307,7 +343,12 @@ export function WalletPanel() {
                 data-testid="fund-faucet"
                 className="w-full flex items-center justify-center gap-1.5 py-1.5 text-[11px] text-emerald-300 bg-emerald-900/20 hover:bg-emerald-900/30 border border-emerald-800/40 rounded transition-colors"
               >
-                <Droplets size={11} />{faucetLoading ? 'Requesting...' : 'Fund via Faucet'}
+                <Droplets size={11} />
+                {faucetLoading
+                  ? 'Requesting...'
+                  : activeWallet
+                    ? `Fund "${activeWallet.name}" via Faucet`
+                    : 'Create Funded Wallet'}
               </button>
             )}
           </div>
@@ -316,7 +357,6 @@ export function WalletPanel() {
 
       {tab === 'network' && (
         <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
-          {/* Network selector */}
           <div>
             <p className="text-[9px] font-mono text-slate-500 uppercase tracking-widest mb-2">Network</p>
             <div className="space-y-1">
@@ -342,7 +382,6 @@ export function WalletPanel() {
             </div>
           </div>
 
-          {/* Connection status */}
           <div className="bg-[#0e1018] rounded border border-[#1e2130] px-3 py-2.5">
             <div className="flex items-center justify-between">
               <span className={cn('text-[11px] font-mono', statusColor)}>
@@ -378,7 +417,6 @@ export function WalletPanel() {
             </div>
           )}
 
-          {/* Explorer link */}
           <div className="text-[9px] text-slate-600 font-mono">
             Explorer: <a href={EXPLORER_URLS[network]} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">{EXPLORER_URLS[network]}</a>
           </div>

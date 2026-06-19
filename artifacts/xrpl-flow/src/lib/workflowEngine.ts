@@ -37,7 +37,7 @@ function getConfig(node: Node): Record<string, any> {
 
 /** Build successors/predecessors graph from edges */
 function buildGraph(nodes: Node[], edges: Edge[]) {
-  const successors  = new Map<string, string[]>();
+  const successors   = new Map<string, string[]>();
   const predecessors = new Map<string, string[]>();
   const nodeMap      = new Map<string, Node>();
   for (const n of nodes) {
@@ -73,10 +73,10 @@ function buildTx(node: Node, activeWallet: WalletInfo, innerBatch = false): Reco
   };
 
   if (innerBatch) {
-    tx.Flags = TF_INNER_BATCH_TXN;
-    tx.Fee   = '0';
-    tx.Sequence = 0;
-    tx.SigningPubKey = '';
+    tx.Flags         = TF_INNER_BATCH_TXN;
+    tx.Fee           = '0';
+    tx.Sequence      = 0;
+    tx.SigningPubKey  = '';
     tx.TxnSignature  = '';
   }
 
@@ -95,8 +95,7 @@ function buildTx(node: Node, activeWallet: WalletInfo, innerBatch = false): Reco
     };
   }
 
-  // Parse textarea JSON fields
-  for (const field of ['SignerEntries', 'AuthAccounts', 'NFTokenOffers', 'PriceDataSeries', 'AcceptedCredentials']) {
+  for (const field of ['SignerEntries', 'AuthAccounts', 'NFTokenOffers', 'PriceDataSeries', 'AcceptedCredentials', 'Memos']) {
     if (typeof cfg[field] === 'string' && cfg[field].trim()) {
       try { tx[field] = JSON.parse(cfg[field]); } catch { /* keep as string */ }
     }
@@ -106,12 +105,11 @@ function buildTx(node: Node, activeWallet: WalletInfo, innerBatch = false): Reco
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Pre-flight: network gating validation
+// Pre-flight: network gating
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Throw if any node in the workflow requires devnet but a different network is active */
 function preflightNetworkGating(nodes: Node[], network: NetworkType): void {
-  if (network === 'devnet') return; // devnet allows all nodes
+  if (network === 'devnet') return;
 
   const violations: string[] = [];
   for (const node of nodes) {
@@ -132,31 +130,23 @@ function preflightNetworkGating(nodes: Node[], network: NetworkType): void {
 // AccountEventTrigger: live WebSocket subscription
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Subscribe to account transactions; returns the first incoming tx as output.
- * The returned cleanup function unsubscribes.
- */
 async function subscribeAccountEvent(
   client: XRPL.Client,
   address: string,
   onTx: (tx: any) => void,
 ): Promise<() => void> {
-  await client.request({
-    command: 'subscribe',
-    accounts: [address],
-  });
+  await client.request({ command: 'subscribe', accounts: [address] });
 
   const handler = (event: any) => {
-    if (event.type === 'transaction' && (
-      event.transaction?.Destination === address ||
-      event.transaction?.Account      === address
-    )) {
+    if (
+      event.type === 'transaction' &&
+      (event.transaction?.Destination === address || event.transaction?.Account === address)
+    ) {
       onTx(event.transaction);
     }
   };
 
   client.on('transaction', handler);
-
   return () => {
     client.off('transaction', handler);
     client.request({ command: 'unsubscribe', accounts: [address] }).catch(() => {});
@@ -164,16 +154,37 @@ async function subscribeAccountEvent(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BatchContainer execution
+// Delay: WaitForLedger close via WebSocket
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Build and submit a Batch transaction wrapping all inner tx nodes
- * (successors of the BatchContainer in the graph).
- */
+function waitForNextLedger(client: XRPL.Client): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      client.off('ledgerClosed', handler);
+      client.request({ command: 'unsubscribe', streams: ['ledger'] }).catch(() => {});
+      reject(new Error('WaitForLedger: no ledger closed within 30s'));
+    }, 30_000);
+
+    const handler = () => {
+      clearTimeout(timeout);
+      client.off('ledgerClosed', handler);
+      client.request({ command: 'unsubscribe', streams: ['ledger'] }).catch(() => {});
+      resolve();
+    };
+
+    client.request({ command: 'subscribe', streams: ['ledger'] })
+      .then(() => client.on('ledgerClosed', handler))
+      .catch(reject);
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BatchContainer: collect children by parentId, build + submit Batch envelope
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function executeBatch(
   batchNode: Node,
-  innerNodes: Node[],
+  allNodes: Node[],
   client: XRPL.Client,
   wallet: XRPL.Wallet,
   activeWalletInfo: WalletInfo,
@@ -184,6 +195,11 @@ async function executeBatch(
   const mode   = cfg.ExecutionMode || 'ALLORNOTHING';
   const modeFlag = BATCH_MODE_FLAGS[mode] ?? BATCH_MODE_FLAGS.ALLORNOTHING;
 
+  // Collect inner tx nodes: those whose parentId === batchNode.id (group children)
+  const innerNodes = allNodes.filter(
+    n => n.parentId === batchNode.id && !NON_TX_TYPES.has(n.type as string)
+  );
+
   cbs.addLogEntry({
     nodeId: batchNode.id, nodeLabel: label,
     message: `Building Batch (${mode}) with ${innerNodes.length} inner txns...`,
@@ -191,19 +207,19 @@ async function executeBatch(
   });
 
   if (innerNodes.length === 0) {
-    throw new Error('BatchContainer has no inner transaction nodes connected via edges.');
+    throw new Error(
+      'BatchContainer has no inner transaction nodes. ' +
+      'Drop tx nodes inside the batch container group on the canvas.'
+    );
   }
   if (innerNodes.length > 8) {
     throw new Error('BatchContainer supports at most 8 inner transactions.');
   }
 
-  // Build each inner tx with tfInnerBatchTxn flag
-  const rawTransactions = innerNodes.map(n => {
-    const innerTx = buildTx(n, activeWalletInfo, true);
-    return { RawTransaction: innerTx };
-  });
+  const rawTransactions = innerNodes.map(n => ({
+    RawTransaction: buildTx(n, activeWalletInfo, true),
+  }));
 
-  // Outer Batch envelope
   const batchTx: any = {
     TransactionType: 'Batch',
     Account: activeWalletInfo.address,
@@ -218,7 +234,7 @@ async function executeBatch(
   });
 
   const result = await client.submitAndWait(batchTx, { wallet });
-  const hash = (result.result as any)?.hash || '';
+  const hash     = (result.result as any)?.hash || '';
   const txResult = (result.result?.meta as any)?.TransactionResult || 'unknown';
 
   if (txResult === 'tesSUCCESS') {
@@ -241,11 +257,12 @@ async function executeBatch(
 async function executeNode(
   node: Node,
   prevOutput: any,
+  allNodes: Node[],
   client: XRPL.Client,
   wallet: XRPL.Wallet,
   activeWalletInfo: WalletInfo,
   cbs: ExecutionCallbacks,
-  innerNodeIds: Set<string>,           // nodes that are inner-batch nodes (skip direct execute)
+  innerNodeIds: Set<string>,
   nodeMap: Map<string, Node>,
   successors: Map<string, string[]>,
 ): Promise<{ output: any; conditionResult?: boolean }> {
@@ -305,16 +322,26 @@ async function executeNode(
     }
 
     if (type === 'Delay') {
-      const ms = Number(cfg.Duration) || 1000;
-      await new Promise(r => setTimeout(r, ms));
-      cbs.setNodeStatus(node.id, 'success');
-      cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `Delayed ${ms}ms`, status: 'success' });
+      const delayMode = cfg.DelayMode || (cfg.WaitForLedger ? 'ledger-close' : 'ms');
+
+      if (delayMode === 'ledger-close') {
+        cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: 'Waiting for next ledger close...', status: 'running' });
+        await waitForNextLedger(client);
+        cbs.setNodeStatus(node.id, 'success');
+        cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: 'Ledger closed', status: 'success' });
+      } else {
+        const ms = Number(cfg.Duration) || 1000;
+        await new Promise(r => setTimeout(r, ms));
+        cbs.setNodeStatus(node.id, 'success');
+        cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `Delayed ${ms}ms`, status: 'success' });
+      }
       return { output: prevOutput };
     }
 
     if (type === 'Loop') {
+      // Handled by the graph traversal layer (runNode), not here
       cbs.setNodeStatus(node.id, 'success');
-      cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `Loop ×${cfg.Iterations || 1}`, status: 'success' });
+      cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `Loop started`, status: 'success' });
       return { output: prevOutput };
     }
 
@@ -327,27 +354,21 @@ async function executeNode(
       return { output: prevOutput };
     }
 
-    // ── BatchContainer ──────────────────────────────────────────────────────
+    // ── BatchContainer (group node) ─────────────────────────────────────────
     if (type === 'BatchContainer') {
-      // Collect direct successor tx-type nodes as inner batch nodes
-      const succIds  = successors.get(node.id) || [];
-      const innerNodes: Node[] = [];
-      for (const sid of succIds) {
-        const sn = nodeMap.get(sid);
-        if (sn && !NON_TX_TYPES.has(sn.type as string)) {
-          innerNodes.push(sn);
-          innerNodeIds.add(sid); // mark so they are skipped in normal traversal
-          cbs.setNodeStatus(sid, 'running');
-        }
-      }
-
       cbs.setNodeStatus(node.id, 'running');
-      const batchOutput = await executeBatch(node, innerNodes, client, wallet, activeWalletInfo, cbs);
 
-      // Mark inner nodes as success
-      for (const sn of innerNodes) {
-        cbs.setNodeStatus(sn.id, 'success');
-        cbs.addLogEntry({ nodeId: sn.id, nodeLabel: getNodeLabel(sn), message: 'Included in Batch', status: 'success' });
+      // Mark group children so they are skipped in normal traversal
+      const childNodes = allNodes.filter(
+        n => n.parentId === node.id && !NON_TX_TYPES.has(n.type as string)
+      );
+      for (const cn of childNodes) innerNodeIds.add(cn.id);
+
+      const batchOutput = await executeBatch(node, allNodes, client, wallet, activeWalletInfo, cbs);
+
+      for (const cn of childNodes) {
+        cbs.setNodeStatus(cn.id, 'success');
+        cbs.addLogEntry({ nodeId: cn.id, nodeLabel: getNodeLabel(cn), message: 'Included in Batch', status: 'success' });
       }
 
       cbs.setNodeStatus(node.id, 'success');
@@ -384,14 +405,6 @@ async function executeNode(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Fix: batchNode reference inside executeNode (need to hoist)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Re-export the actual public API. The `batchNode` in executeNode above
-// refers to the `node` argument (BatchContainer) — fix by aliasing inside scope.
-// (The above code uses `batchNode` correctly — it IS the `node` arg.)
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Main workflow runner
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -403,14 +416,11 @@ export async function runWorkflow(
   walletSeed: string,
   cbs: ExecutionCallbacks,
 ): Promise<void> {
-  // ── 1. Pre-flight: network gating ─────────────────────────────────────────
   preflightNetworkGating(nodes, cbs.network);
 
-  // ── 2. Build graph ────────────────────────────────────────────────────────
   const { successors, predecessors, nodeMap } = buildGraph(nodes, edges);
   const wallet = XRPL.Wallet.fromSeed(walletSeed);
 
-  // ── 3. Find trigger nodes ─────────────────────────────────────────────────
   const triggerTypes = new Set(['ManualTrigger', 'AccountEventTrigger']);
   const triggerNodes = nodes.filter(n => triggerTypes.has(n.type as string));
 
@@ -418,12 +428,14 @@ export async function runWorkflow(
     throw new Error('No trigger node found. Add a Manual Trigger or Account Event trigger to start the workflow.');
   }
 
-  // ── 4. Traversal state ───────────────────────────────────────────────────
-  const inFlight     = new Map<string, Promise<any>>();
-  const innerBatchIds = new Set<string>(); // nodes absorbed into a BatchContainer
+  // Group-child nodes are skipped during normal graph traversal; the BatchContainer handles them
+  const innerBatchIds = new Set<string>(
+    nodes.filter(n => n.parentId !== undefined).map(n => n.id)
+  );
+
+  const inFlight = new Map<string, Promise<any>>();
 
   async function runNode(nodeId: string, input: any): Promise<any> {
-    // Skip nodes that are inner-batch members (executed by the BatchContainer)
     if (innerBatchIds.has(nodeId)) return input;
     if (inFlight.has(nodeId)) return inFlight.get(nodeId);
 
@@ -431,10 +443,11 @@ export async function runWorkflow(
     if (!node) return input;
 
     const promise = executeNode(
-      node, input, client, wallet, activeWalletInfo, cbs, innerBatchIds, nodeMap, successors,
+      node, input, nodes, client, wallet, activeWalletInfo, cbs, innerBatchIds, nodeMap, successors,
     ).then(({ output, conditionResult }) => {
       const succs = successors.get(nodeId) || [];
 
+      // ConditionBranch: route by handle label
       if ((node.type as string) === 'ConditionBranch') {
         const trueEdges  = edges.filter(e => e.source === nodeId && (e.sourceHandle === 'true'  || !e.sourceHandle));
         const falseEdges = edges.filter(e => e.source === nodeId && e.sourceHandle === 'false');
@@ -442,30 +455,48 @@ export async function runWorkflow(
         return Promise.all(nextEdges.map(e => runNode(e.target, output)));
       }
 
+      // ParallelSplit: all successors concurrently
       if ((node.type as string) === 'ParallelSplit') {
         return Promise.all(succs.map(sid => runNode(sid, output)));
       }
 
+      // SyncJoin: wait for all predecessors before continuing
       if ((node.type as string) === 'SyncJoin') {
         const preds = predecessors.get(nodeId) || [];
         return Promise.all(preds.map(pid => inFlight.get(pid) || Promise.resolve()))
           .then(() => Promise.all(succs.map(sid => runNode(sid, output))));
       }
 
+      // Loop: count or until-condition
       if ((node.type as string) === 'Loop') {
-        const iters = Number(getConfig(node).Iterations) || 1;
-        const delay = Number(getConfig(node).DelayBetween) || 0;
+        const loopMode = getConfig(node).LoopMode || 'count';
+        const maxIter  = Number(getConfig(node).Iterations) || 1;
+        const delay    = Number(getConfig(node).DelayBetween) || 0;
+        const condExpr = getConfig(node).Condition || '';
+
         const run = async () => {
-          for (let i = 0; i < iters; i++) {
-            if (i > 0 && delay > 0) await new Promise(r => setTimeout(r, delay));
+          let iter = 0;
+          const MAX_SAFETY = 100;
+          let loopOutput = output;
+
+          while (true) {
+            if (loopMode === 'count' && iter >= maxIter) break;
+            if (loopMode === 'until-condition' && condExpr && evalCondition(condExpr, loopOutput)) break;
+            if (iter >= MAX_SAFETY) break; // safety cap
+
+            if (iter > 0 && delay > 0) await new Promise(r => setTimeout(r, delay));
+
+            // Clear cached results for successor nodes before each re-run
             for (const sid of succs) inFlight.delete(sid);
-            await Promise.all(succs.map(sid => runNode(sid, output)));
+            const results = await Promise.all(succs.map(sid => runNode(sid, loopOutput)));
+            loopOutput = results[0] ?? loopOutput;
+            iter++;
           }
         };
         return run();
       }
 
-      // BatchContainer: skip its direct successors (already absorbed)
+      // BatchContainer: successors that are NOT group children run after the batch
       if ((node.type as string) === 'BatchContainer') {
         const afterBatch = succs.filter(sid => !innerBatchIds.has(sid));
         return afterBatch.reduce(

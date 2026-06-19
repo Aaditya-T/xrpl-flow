@@ -702,17 +702,30 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
   {
     id: 'Loop', label: 'Loop',
     category: 'Control Flow', color: CATEGORIES.CONTROL_FLOW.color,
-    networkGating: 'all', description: 'Repeat downstream N times.',
+    networkGating: 'all', description: 'Repeat downstream N times or until a condition is met.',
     fields: [
-      num('Iterations', 'Iterations', true),
-      num('DelayBetween', 'Delay Between (ms)'),
+      { name: 'LoopMode', label: 'Loop Mode', type: 'select', required: true,
+        defaultValue: 'count',
+        options: ['count', 'until-condition'],
+        description: '"count" repeats N times; "until-condition" loops until the JS expression is truthy' },
+      num('Iterations', 'Max Iterations (count mode)'),
+      txt('Condition', 'Stop Condition (JS)', false,
+        'Expression evaluated against output each iteration, e.g. output.count >= 3'),
+      num('DelayBetween', 'Delay Between Iterations (ms)'),
     ]
   },
   {
     id: 'Delay', label: 'Delay',
     category: 'Control Flow', color: CATEGORIES.CONTROL_FLOW.color,
-    networkGating: 'all', description: 'Pause execution.',
-    fields: [num('Duration', 'Duration (ms)', true), bool('WaitForLedger', 'Wait For Ledger Close')]
+    networkGating: 'all', description: 'Pause execution for a fixed time or until the next ledger closes.',
+    fields: [
+      { name: 'DelayMode', label: 'Delay Mode', type: 'select', required: true,
+        defaultValue: 'ms',
+        options: ['ms', 'ledger-close'],
+        description: '"ms" waits a fixed millisecond duration; "ledger-close" waits for the next ledger close event' },
+      num('Duration', 'Duration (ms) — used when mode is ms'),
+      bool('WaitForLedger', 'Wait For Ledger Close (legacy)'),
+    ]
   },
 
   // ── Output ───────────────────────────────────────────────────────────────

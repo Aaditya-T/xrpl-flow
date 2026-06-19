@@ -19,20 +19,30 @@ export const FAUCET_URLS = {
   devnet: 'https://faucet.devnet.rippletest.net/accounts'
 };
 
-export async function fundWalletWithFaucet(network: NetworkType): Promise<{ account: { xAddress: string; classicAddress: string; secret: string } }> {
+/**
+ * Request funds from the faucet.
+ * - If `destination` is provided the faucet will fund that existing address.
+ * - Otherwise the faucet mints a brand-new funded wallet and returns its credentials.
+ */
+export async function fundWalletWithFaucet(
+  network: NetworkType,
+  destination?: string,
+): Promise<{ account: { xAddress: string; classicAddress: string; secret: string } }> {
   if (network === 'mainnet') {
     throw new Error('Faucet not available on mainnet');
   }
-  
+
   const url = FAUCET_URLS[network];
+  const body = destination ? JSON.stringify({ destination }) : undefined;
   const response = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' }
+    headers: { 'Content-Type': 'application/json' },
+    ...(body ? { body } : {}),
   });
-  
+
   if (!response.ok) {
     throw new Error(`Faucet request failed: ${response.statusText}`);
   }
-  
+
   return response.json();
 }

@@ -7,9 +7,9 @@ import {
   MiniMap,
   ReactFlowProvider,
   useReactFlow,
-  addEdge,
   Connection,
   NodeTypes,
+  Node,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
@@ -22,6 +22,7 @@ import { WalletPanel } from './WalletPanel';
 import { ExecutionLog } from './ExecutionLog';
 import { Header } from './Header';
 import { XRPLNode } from './nodes/XRPLNode';
+import { BatchContainerNode } from './nodes/BatchContainerNode';
 
 const NODE_TYPES: NodeTypes = {
   ManualTrigger: XRPLNode,
@@ -87,7 +88,7 @@ const NODE_TYPES: NodeTypes = {
   LoanPay: XRPLNode,
   LoanManage: XRPLNode,
   LoanDelete: XRPLNode,
-  BatchContainer: XRPLNode,
+  BatchContainer: BatchContainerNode,
   ConditionBranch: XRPLNode,
   ParallelSplit: XRPLNode,
   SyncJoin: XRPLNode,
@@ -96,8 +97,30 @@ const NODE_TYPES: NodeTypes = {
   LogOutput: XRPLNode,
 };
 
+/** Default size for a newly-dropped BatchContainer group */
+const BATCH_DEFAULT_W = 480;
+const BATCH_DEFAULT_H = 260;
+
 let nodeIdCounter = Date.now();
 const newNodeId = () => `node_${nodeIdCounter++}`;
+
+/**
+ * Returns the BatchContainer node (if any) that fully contains the given
+ * flow-space point (cx, cy).
+ */
+function findParentBatch(nodes: Node[], cx: number, cy: number): Node | undefined {
+  return nodes.find((n) => {
+    if (n.type !== 'BatchContainer') return false;
+    const w = (n.style?.width as number) || BATCH_DEFAULT_W;
+    const h = (n.style?.height as number) || BATCH_DEFAULT_H;
+    return (
+      cx >= n.position.x &&
+      cx <= n.position.x + w &&
+      cy >= n.position.y &&
+      cy <= n.position.y + h
+    );
+  });
+}
 
 function Canvas() {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
@@ -106,8 +129,11 @@ function Canvas() {
   const [rightTab, setRightTab] = useState<'config' | 'wallets'>('wallets');
 
   const {
-    nodes, edges, onNodesChange, onEdgesChange, onConnect,
-    setSelectedNodeId, selectedNodeId, loadWorkflow, loadInitialWorkflows, savedWorkflows,
+    nodes, edges,
+    onNodesChange, onEdgesChange, onConnect,
+    setSelectedNodeId, selectedNodeId,
+    loadWorkflow, loadInitialWorkflows, savedWorkflows,
+    pushToUndoStack, undo, saveWorkflow,
   } = useWorkflowStore();
 
   // Initialize example workflows on first load
@@ -115,7 +141,6 @@ function Canvas() {
     const workflows = initializeExamplesIfNeeded();
     if (Object.keys(workflows).length > 0) {
       loadInitialWorkflows(workflows);
-      // Load first example if canvas is empty
       if (nodes.length === 0) {
         const first = Object.keys(workflows)[0];
         if (first) loadWorkflow(first);
@@ -124,7 +149,24 @@ function Canvas() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // When a node is selected, switch right panel to config
+  // Global keyboard shortcuts: Cmd/Ctrl+S → save, Cmd/Ctrl+Z → undo
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      if (e.key === 's') {
+        e.preventDefault();
+        saveWorkflow();
+      }
+      if (e.key === 'z') {
+        e.preventDefault();
+        undo();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [saveWorkflow, undo]);
+
   const handleNodeClick = useCallback((_: React.MouseEvent, node: any) => {
     setSelectedNodeId(node.id);
     setRightTab('config');
@@ -146,25 +188,44 @@ function Canvas() {
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    const nodeType = e.dataTransfer.getData('application/reactflow/type');
+    const nodeType  = e.dataTransfer.getData('application/reactflow/type');
     const nodeLabel = e.dataTransfer.getData('application/reactflow/label');
     if (!nodeType) return;
+
+    pushToUndoStack();
 
     const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
     const def = getNodeDef(nodeType);
 
-    const newNode = {
+    // Detect if we're dropping inside a BatchContainer's bounds
+    const parentBatch = nodeType !== 'BatchContainer'
+      ? findParentBatch(nodes, position.x, position.y)
+      : undefined;
+
+    const newNode: Node = {
       id: newNodeId(),
       type: nodeType,
-      position,
+      position: parentBatch
+        ? {
+            x: position.x - parentBatch.position.x,
+            y: position.y - parentBatch.position.y,
+          }
+        : position,
       data: {
         label: nodeLabel || def?.label || nodeType,
         config: {},
       },
+      ...(nodeType === 'BatchContainer' && {
+        style: { width: BATCH_DEFAULT_W, height: BATCH_DEFAULT_H },
+      }),
+      ...(parentBatch && {
+        parentId: parentBatch.id,
+        extent: 'parent' as const,
+      }),
     };
 
     onNodesChange([{ type: 'add', item: newNode }]);
-  }, [screenToFlowPosition, onNodesChange]);
+  }, [screenToFlowPosition, onNodesChange, nodes, pushToUndoStack]);
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#0a0b0d]">
@@ -211,6 +272,7 @@ function Canvas() {
             <MiniMap
               position="bottom-left"
               nodeColor={(node) => {
+                if (node.type === 'BatchContainer') return '#ef4444';
                 const def = getNodeDef(node.type as string);
                 return def?.color || '#6b7280';
               }}
@@ -218,12 +280,12 @@ function Canvas() {
             />
           </ReactFlow>
 
-          {/* Empty state hint */}
           {nodes.length === 0 && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               <div className="text-center">
                 <p className="text-[13px] text-slate-600 font-medium">Drop nodes from the palette</p>
                 <p className="text-[11px] text-slate-700 mt-1">or load an example workflow from the header</p>
+                <p className="text-[10px] text-slate-700 mt-1 font-mono">⌘S save · ⌘Z undo · Del delete</p>
               </div>
             </div>
           )}
@@ -231,7 +293,6 @@ function Canvas() {
 
         {/* Right: Config / Wallet panel */}
         <div className="w-[280px] flex-shrink-0 flex flex-col border-l border-[#1e2130] bg-[#0e1018]">
-          {/* Tab switcher */}
           <div className="flex border-b border-[#1e2130] flex-shrink-0">
             <button
               onClick={() => setRightTab('config')}
@@ -254,7 +315,6 @@ function Canvas() {
         </div>
       </div>
 
-      {/* Bottom: Execution Log */}
       {showLog && (
         <div className="h-[220px] flex-shrink-0">
           <ExecutionLog onClose={() => setShowLog(false)} />
