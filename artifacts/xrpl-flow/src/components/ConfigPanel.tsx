@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ChevronDown, ChevronUp, Wallet } from 'lucide-react';
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import { getNodeDef, FieldDef } from '@/lib/nodeRegistry';
 import { useWorkflowStore } from '@/store/workflowStore';
 import { cn } from '@/lib/utils';
@@ -79,11 +79,39 @@ function AmountInput({ field, value, onChange }: {
   );
 }
 
-function FieldInput({ field, value, onChange, activeAddress }: {
+function WalletPicker({ value, onChange, wallets }: {
+  value: string;
+  onChange: (addr: string) => void;
+  wallets: { id: string; name: string; address: string }[];
+}) {
+  function truncAddr(s: string) {
+    return s.length > 16 ? s.slice(0, 6) + '…' + s.slice(-6) : s;
+  }
+  const matched = wallets.find(w => w.address === value);
+  return (
+    <select
+      value={matched ? matched.id : ''}
+      onChange={e => {
+        const w = wallets.find(x => x.id === e.target.value);
+        if (w) onChange(w.address);
+      }}
+      className="w-full bg-[#0e1018] border border-[#1e2130] rounded text-[10px] text-slate-300 px-2 py-1.5 outline-none focus:border-blue-500/50 font-mono cursor-pointer mb-1"
+    >
+      <option value="">— pick wallet —</option>
+      {wallets.map(w => (
+        <option key={w.id} value={w.id}>
+          {w.name}  ({truncAddr(w.address)})
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function FieldInput({ field, value, onChange, wallets }: {
   field: FieldDef;
   value: any;
   onChange: (val: any) => void;
-  activeAddress: string;
+  wallets: { id: string; name: string; address: string }[];
 }) {
   const baseInput = 'w-full bg-[#0e1018] border border-[#1e2130] rounded text-[11px] text-slate-200 px-2 py-1.5 outline-none focus:border-blue-500/50 placeholder:text-slate-600 font-mono';
 
@@ -142,40 +170,43 @@ function FieldInput({ field, value, onChange, activeAddress }: {
     );
   }
 
-  const isAddress = field.type === 'address';
+  if (field.type === 'address') {
+    return (
+      <div>
+        {wallets.length > 0 && (
+          <WalletPicker value={value ?? ''} onChange={onChange} wallets={wallets} />
+        )}
+        <input
+          type="text"
+          value={value ?? ''}
+          onChange={e => onChange(e.target.value)}
+          placeholder={field.description || 'r...'}
+          data-testid={`field-${field.name}`}
+          className={baseInput}
+        />
+      </div>
+    );
+  }
 
   return (
-    <div className="flex gap-1">
-      <input
-        type={field.type === 'number' ? 'number' : 'text'}
-        value={value ?? ''}
-        onChange={e => onChange(field.type === 'number' ? Number(e.target.value) || '' : e.target.value)}
-        placeholder={field.description || (field.type === 'address' ? 'r...' : field.type === 'drops' ? 'drops' : '')}
-        data-testid={`field-${field.name}`}
-        className={cn(baseInput, 'flex-1')}
-      />
-      {isAddress && activeAddress && (
-        <button
-          type="button"
-          onClick={() => onChange(activeAddress)}
-          title="Use active wallet"
-          className="px-1.5 py-1 bg-[#1e2130] hover:bg-[#252b3b] border border-[#2e3448] rounded text-blue-400 transition-colors flex-shrink-0"
-        >
-          <Wallet size={10} />
-        </button>
-      )}
-    </div>
+    <input
+      type={field.type === 'number' ? 'number' : 'text'}
+      value={value ?? ''}
+      onChange={e => onChange(field.type === 'number' ? Number(e.target.value) || '' : e.target.value)}
+      placeholder={field.description || (field.type === 'drops' ? 'drops' : '')}
+      data-testid={`field-${field.name}`}
+      className={baseInput}
+    />
   );
 }
 
 export function ConfigPanel() {
-  const { selectedNodeId, nodes, updateNodeData, network, wallets, activeWalletId } = useWorkflowStore();
+  const { selectedNodeId, nodes, updateNodeData, network, wallets } = useWorkflowStore();
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [localConfig, setLocalConfig] = useState<Record<string, any>>({});
 
   const node = nodes.find(n => n.id === selectedNodeId);
   const def = node ? getNodeDef(node.type as string) : null;
-  const activeWallet = wallets.find(w => w.id === activeWalletId);
 
   useEffect(() => {
     if (node) {
@@ -263,7 +294,7 @@ export function ConfigPanel() {
                   field={field}
                   value={localConfig[field.name]}
                   onChange={val => handleChange(field.name, val)}
-                  activeAddress={activeWallet?.address || ''}
+                  wallets={wallets}
                 />
               </div>
             ))}
@@ -291,7 +322,7 @@ export function ConfigPanel() {
                       field={field}
                       value={localConfig[field.name]}
                       onChange={val => handleChange(field.name, val)}
-                      activeAddress={activeWallet?.address || ''}
+                      wallets={wallets}
                     />
                   </div>
                 ))}

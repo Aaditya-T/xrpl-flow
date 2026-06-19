@@ -5,7 +5,6 @@ import { useWorkflowStore } from '@/store/workflowStore';
 import { NETWORK_URLS, EXPLORER_URLS, fundWalletWithFaucet } from '@/lib/xrplClient';
 import { cn } from '@/lib/utils';
 
-/** Balance auto-refresh interval in ms */
 const BALANCE_POLL_MS = 30_000;
 
 function truncate(s: string, len = 14) {
@@ -30,6 +29,8 @@ function CopyButton({ text }: { text: string }) {
 function WalletCard({ wallet }: { wallet: { id: string; name: string; address: string; publicKey: string; seed?: string; balance?: string } }) {
   const { activeWalletId, setActiveWallet, updateWalletBalance, removeWallet, network, xrplClient } = useWorkflowStore();
   const [expanded, setExpanded] = useState(false);
+  const [funding, setFunding] = useState(false);
+  const [fundError, setFundError] = useState('');
   const isActive = wallet.id === activeWalletId;
 
   const fetchBalance = useCallback(async () => {
@@ -43,13 +44,28 @@ function WalletCard({ wallet }: { wallet: { id: string; name: string; address: s
     }
   }, [xrplClient, wallet.id, wallet.address, updateWalletBalance]);
 
-  // Auto-poll balance when connected
   useEffect(() => {
     if (!xrplClient) return;
     fetchBalance();
     const interval = setInterval(fetchBalance, BALANCE_POLL_MS);
     return () => clearInterval(interval);
   }, [xrplClient, fetchBalance]);
+
+  const handleFund = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (network === 'mainnet' || funding) return;
+    setFunding(true);
+    setFundError('');
+    try {
+      await fundWalletWithFaucet(network, wallet.address);
+      setTimeout(() => fetchBalance(), 4000);
+    } catch (err: any) {
+      setFundError(err.message || 'Faucet failed');
+      setTimeout(() => setFundError(''), 4000);
+    } finally {
+      setFunding(false);
+    }
+  };
 
   return (
     <div
@@ -60,7 +76,10 @@ function WalletCard({ wallet }: { wallet: { id: string; name: string; address: s
       data-testid={`wallet-${wallet.id}`}
     >
       <div className="flex items-center gap-2 px-2.5 py-2">
+        {/* Active dot */}
         <div className={cn('w-2 h-2 rounded-full flex-shrink-0', isActive ? 'bg-blue-500' : 'bg-slate-600')} />
+
+        {/* Name + address */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
             <span className="text-[11px] font-medium text-slate-200 truncate">{wallet.name}</span>
@@ -73,6 +92,8 @@ function WalletCard({ wallet }: { wallet: { id: string; name: string; address: s
             <CopyButton text={wallet.address} />
           </div>
         </div>
+
+        {/* Right controls */}
         <div className="flex items-center gap-1.5 flex-shrink-0">
           {wallet.balance !== undefined && (
             <span className="text-[10px] font-mono text-slate-400">{wallet.balance} XRP</span>
@@ -83,6 +104,26 @@ function WalletCard({ wallet }: { wallet: { id: string; name: string; address: s
             title="Refresh balance"
             className="text-slate-600 hover:text-slate-300 transition-colors text-[9px]"
           >↻</button>
+
+          {/* Fund button — inline, no expand needed */}
+          {network !== 'mainnet' && (
+            <button
+              type="button"
+              onClick={handleFund}
+              disabled={funding}
+              title={`Fund via ${network} faucet`}
+              className={cn(
+                'flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono border transition-colors',
+                funding
+                  ? 'text-emerald-500/50 border-emerald-900/30 cursor-wait'
+                  : 'text-emerald-400 border-emerald-800/40 hover:bg-emerald-900/20',
+              )}
+            >
+              <Droplets size={9} />
+              {funding ? '…' : 'Fund'}
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => setExpanded(p => !p)}
@@ -92,6 +133,13 @@ function WalletCard({ wallet }: { wallet: { id: string; name: string; address: s
           </button>
         </div>
       </div>
+
+      {/* Fund error */}
+      {fundError && (
+        <div className="mx-2.5 mb-1.5 text-[9px] text-red-400 font-mono bg-red-900/20 border border-red-800/30 px-2 py-1 rounded">
+          {fundError}
+        </div>
+      )}
 
       {expanded && (
         <div className="px-2.5 pb-2.5 border-t border-[#1e2130] pt-2 space-y-1.5">
@@ -143,12 +191,10 @@ export function WalletPanel() {
   const [error, setError] = useState('');
 
   const {
-    wallets, activeWalletId, addWallet, updateWalletBalance,
+    wallets, addWallet, updateWalletBalance,
     network, setNetwork, xrplClient, connectionStatus,
     setConnectionStatus, setClient,
   } = useWorkflowStore();
-
-  const activeWallet = wallets.find(w => w.id === activeWalletId);
 
   const generateWallet = () => {
     const w = XRPL.Wallet.generate();
@@ -182,42 +228,23 @@ export function WalletPanel() {
     }
   };
 
-  /**
-   * Fund via faucet:
-   * - If there is an active wallet → fund that existing address (no new wallet created)
-   * - If no wallets exist → create a fresh faucet wallet and add it
-   */
-  const fundWallet = async () => {
+  /** Create a brand-new funded wallet when none exist */
+  const createFundedWallet = async () => {
     if (network === 'mainnet') return;
     setFaucetLoading(true);
     setError('');
     try {
-      if (activeWallet) {
-        // Fund the currently active wallet address
-        await fundWalletWithFaucet(network, activeWallet.address);
-        // Refresh its balance after a short delay for the ledger to close
-        setTimeout(async () => {
-          if (!xrplClient) return;
-          try {
-            const res = await xrplClient.request({ command: 'account_info', account: activeWallet.address, ledger_index: 'validated' });
-            const bal = (Number((res.result.account_data as any).Balance) / 1_000_000).toFixed(6);
-            updateWalletBalance(activeWallet.id, bal);
-          } catch { /* account may not exist yet */ }
-        }, 4000);
-      } else {
-        // No active wallet — mint a new one via the faucet
-        const res = await fundWalletWithFaucet(network);
-        const acct = res.account;
-        const w = XRPL.Wallet.fromSeed(acct.secret);
-        addWallet({
-          id: crypto.randomUUID(),
-          name: `Faucet ${wallets.length + 1}`,
-          address: acct.classicAddress || w.address,
-          publicKey: w.publicKey,
-          seed: acct.secret,
-          balance: '1000',
-        });
-      }
+      const res = await fundWalletWithFaucet(network);
+      const acct = res.account;
+      const w = XRPL.Wallet.fromSeed(acct.secret);
+      addWallet({
+        id: crypto.randomUUID(),
+        name: `Faucet ${wallets.length + 1}`,
+        address: acct.classicAddress || w.address,
+        publicKey: w.publicKey,
+        seed: acct.secret,
+        balance: '1000',
+      });
     } catch (e: any) {
       setError(e.message || 'Faucet failed');
     } finally {
@@ -320,6 +347,7 @@ export function WalletPanel() {
                 type="text"
                 value={importSeed}
                 onChange={e => setImportSeed(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') importWallet(); }}
                 placeholder="Seed / secret..."
                 data-testid="import-seed"
                 className="flex-1 bg-[#0e1018] border border-[#1e2130] rounded text-[11px] text-slate-200 px-2 py-1.5 outline-none focus:border-blue-500/50 placeholder:text-slate-600 font-mono"
@@ -338,17 +366,13 @@ export function WalletPanel() {
             {network !== 'mainnet' && (
               <button
                 type="button"
-                onClick={fundWallet}
+                onClick={createFundedWallet}
                 disabled={faucetLoading}
                 data-testid="fund-faucet"
                 className="w-full flex items-center justify-center gap-1.5 py-1.5 text-[11px] text-emerald-300 bg-emerald-900/20 hover:bg-emerald-900/30 border border-emerald-800/40 rounded transition-colors"
               >
                 <Droplets size={11} />
-                {faucetLoading
-                  ? 'Requesting...'
-                  : activeWallet
-                    ? `Fund "${activeWallet.name}" via Faucet`
-                    : 'Create Funded Wallet'}
+                {faucetLoading ? 'Requesting...' : 'Create Funded Wallet'}
               </button>
             )}
           </div>
