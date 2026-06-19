@@ -1,4 +1,4 @@
-export type FieldType = 'text' | 'number' | 'drops' | 'address' | 'hex' | 'boolean' | 'select' | 'textarea';
+export type FieldType = 'text' | 'number' | 'drops' | 'address' | 'hex' | 'boolean' | 'select' | 'textarea' | 'amount';
 
 export interface FieldDef {
   name: string;
@@ -56,6 +56,9 @@ const bool   = (name: string, label: string): FieldDef =>
 const flags  = (): FieldDef => num('Flags', 'Flags (bitmask)');
 const ta     = (name: string, label: string, req = false, desc?: string): FieldDef =>
   ({ name, label, type: 'textarea', required: req, description: desc });
+/** XRP-or-token amount widget: renders as drops input OR currency+issuer+value inputs */
+const amt    = (name: string, label: string, req = false, desc?: string): FieldDef =>
+  ({ name, label, type: 'amount',   required: req, description: desc });
 
 /**
  * Fields present on EVERY XRPL transaction (BaseTransaction).
@@ -186,12 +189,9 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: withCommon([
       addr('Account',        'Sender'),
       addr('Destination',    'Destination'),
-      txt ('Amount',         'Amount', true,
-           'XRP: drops string e.g. "1000000". Token: {"currency":"USD","issuer":"r...","value":"10"}'),
-      txt ('SendMax',        'Send Max (cross-currency)',     false,
-           'Max amount sender is willing to pay. Enables cross-currency & partial payment.'),
-      txt ('DeliverMin',     'Deliver Min (partial payment)', false,
-           'Minimum amount to deliver. Enables partial payment. Requires tfPartialPayment flag.'),
+      amt ('Amount',         'Amount',                        true),
+      amt ('SendMax',        'Send Max (cross-currency)',     false),
+      amt ('DeliverMin',     'Deliver Min (partial payment)', false),
       hex ('InvoiceID',      'Invoice ID'),
       num ('DestinationTag', 'Destination Tag'),
       ta  ('Paths',          'Paths (JSON)', false,
@@ -306,9 +306,8 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     networkGating: 'all', description: 'Place a limit order on the DEX.',
     fields: withCommon([
       addr('Account',        'Account'),
-      txt ('TakerPays',      'Taker Pays', true,
-           'drops string or {"currency":"...","issuer":"r...","value":"..."}'),
-      txt ('TakerGets',      'Taker Gets', true),
+      amt ('TakerPays',      'Taker Pays', true),
+      amt ('TakerGets',      'Taker Gets', true),
       num ('Expiration',     'Expiration (Ripple Epoch)'),
       num ('OfferSequence',  'Offer Sequence (cancel before placing)'),
       bool('tfPassive',      'Passive'),
@@ -333,8 +332,7 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     networkGating: 'all', description: 'Issuer claws back tokens from a holder.',
     fields: withCommon([
       addr('Account', 'Account (Issuer)'),
-      txt ('Amount',  'Amount', true,
-           '{"currency":"USD","issuer":"<holder>","value":"10"} — issuer in Amount is the holder'),
+      amt ('Amount',  'Amount (issuer field = holder address)', true),
     ]),
   },
 
@@ -345,9 +343,8 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     networkGating: 'all', description: 'Create a new AMM pool.',
     fields: withCommon([
       addr('Account',     'Account'),
-      txt ('Amount',      'Amount (asset 1)', true,
-           'drops or {"currency":"...","issuer":"r...","value":"..."}'),
-      txt ('Amount2',     'Amount 2 (asset 2)', true),
+      amt ('Amount',      'Amount (asset 1)', true),
+      amt ('Amount2',     'Amount 2 (asset 2)', true),
       num ('TradingFee',  'Trading Fee (0–1000, 1000 = 1%)', true),
     ]),
   },
@@ -359,10 +356,10 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
       addr('Account',     'Account'),
       txt ('Asset',       'Asset',   true),
       txt ('Asset2',      'Asset 2', true),
-      txt ('Amount',      'Amount (asset 1)'),
-      txt ('Amount2',     'Amount 2 (asset 2)'),
-      txt ('LPTokenOut',  'LP Token Out'),
-      txt ('EPrice',      'Effective Price'),
+      amt ('Amount',      'Amount (asset 1)'),
+      amt ('Amount2',     'Amount 2 (asset 2)'),
+      amt ('LPTokenOut',  'LP Token Out'),
+      amt ('EPrice',      'Effective Price'),
       bool('tfLPToken',   'Single-asset LP token deposit'),
       bool('tfSingleAsset','Single-asset deposit'),
       bool('tfTwoAsset',  'Two-asset deposit'),
@@ -380,10 +377,10 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
       addr('Account',     'Account'),
       txt ('Asset',       'Asset',   true),
       txt ('Asset2',      'Asset 2', true),
-      txt ('Amount',      'Amount (asset 1)'),
-      txt ('Amount2',     'Amount 2 (asset 2)'),
-      txt ('LPTokenIn',   'LP Token In'),
-      txt ('EPrice',      'Effective Price'),
+      amt ('Amount',      'Amount (asset 1)'),
+      amt ('Amount2',     'Amount 2 (asset 2)'),
+      amt ('LPTokenIn',   'LP Token In'),
+      amt ('EPrice',      'Effective Price'),
       bool('tfLPToken',   'LP token proportional withdrawal'),
       bool('tfWithdrawAll','Withdraw all'),
       bool('tfOneAssetWithdrawAll','One-asset withdraw all'),
@@ -413,8 +410,8 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
       addr('Account',      'Account'),
       txt ('Asset',        'Asset',   true),
       txt ('Asset2',       'Asset 2', true),
-      txt ('BidMin',       'Bid Min'),
-      txt ('BidMax',       'Bid Max'),
+      amt ('BidMin',       'Bid Min'),
+      amt ('BidMax',       'Bid Max'),
       ta  ('AuthAccounts', 'Auth Accounts (JSON array)', false,
            '[{"AuthAccount":{"Account":"r..."}}]'),
     ]),
@@ -438,7 +435,7 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
       addr('Holder',  'Holder', true),
       txt ('Asset',   'Asset',   true),
       txt ('Asset2',  'Asset 2', true),
-      txt ('Amount',  'Amount (optional cap)'),
+      amt ('Amount',  'Amount (optional cap)'),
     ]),
   },
 
@@ -637,8 +634,7 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: withCommon([
       addr('Account',      'Account'),
       hex ('NFTokenID',    'NFToken ID', true),
-      txt ('Amount',       'Amount',     true,
-           'Price: drops string or {"currency":"...","issuer":"r...","value":"..."}'),
+      amt ('Amount',       'Price',      true),
       addr('Owner',        'Owner (for buy offer, owner of NFT)', false),
       addr('Destination',  'Destination (restricted offer)', false),
       num ('Expiration',   'Expiration (Ripple Epoch)'),
@@ -664,8 +660,7 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
       addr('Account',           'Account'),
       hex ('NFTokenBuyOffer',   'Buy Offer ID'),
       hex ('NFTokenSellOffer',  'Sell Offer ID'),
-      txt ('NFTokenBrokerFee',  'Broker Fee (brokered mode only)',
-           false,               'drops or token amount'),
+      amt ('NFTokenBrokerFee',  'Broker Fee (brokered mode only)'),
     ]),
   },
   {
@@ -688,8 +683,7 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: withCommon([
       addr('Account',        'Account'),
       addr('Destination',    'Destination'),
-      txt ('SendMax',        'Send Max', true,
-           'Maximum amount. drops or {"currency":"...","issuer":"r...","value":"..."}'),
+      amt ('SendMax',        'Send Max', true),
       num ('DestinationTag', 'Destination Tag'),
       num ('Expiration',     'Expiration (Ripple Epoch)'),
       hex ('InvoiceID',      'Invoice ID'),
@@ -702,8 +696,8 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: withCommon([
       addr('Account',     'Account (check destination)'),
       hex ('CheckID',     'Check ID', true),
-      txt ('Amount',      'Amount (exact, mutually exclusive with DeliverMin)'),
-      txt ('DeliverMin',  'Deliver Min (flexible, mutually exclusive with Amount)'),
+      amt ('Amount',      'Amount (exact — exclusive with Deliver Min)'),
+      amt ('DeliverMin',  'Deliver Min (flexible — exclusive with Amount)'),
     ]),
   },
   {
@@ -749,7 +743,7 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: withCommon([
       addr('Account',     'Account'),
       hex ('VaultID',     'Vault ID', true),
-      txt ('Amount',      'Amount (deposited asset)', true),
+      amt ('Amount',      'Amount (deposited asset)', true),
       txt ('MPTokenOut',  'LP Token Out (min shares expected)'),
     ]),
   },
@@ -760,7 +754,7 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: withCommon([
       addr('Account',    'Account'),
       hex ('VaultID',    'Vault ID', true),
-      txt ('Amount',     'Amount (asset to withdraw)'),
+      amt ('Amount',     'Amount (asset to withdraw)'),
       txt ('MPTokenIn',  'LP Token In (shares to burn)'),
     ]),
   },
@@ -781,7 +775,7 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
       addr('Account', 'Account (Issuer)'),
       hex ('VaultID', 'Vault ID', true),
       addr('Holder',  'Holder',   true),
-      txt ('Amount',  'Amount (cap — omit for full clawback)'),
+      amt ('Amount',  'Amount (cap — omit for full clawback)'),
     ]),
   },
 
@@ -814,7 +808,7 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: withCommon([
       addr('Account',      'Account'),
       hex ('LoanBrokerID', 'Loan Broker ID', true),
-      txt ('Amount',       'Amount', true),
+      amt ('Amount',       'Amount', true),
     ]),
   },
   {
@@ -824,7 +818,7 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: withCommon([
       addr('Account',      'Account'),
       hex ('LoanBrokerID', 'Loan Broker ID', true),
-      txt ('Amount',       'Amount', true),
+      amt ('Amount',       'Amount', true),
     ]),
   },
   {
@@ -835,7 +829,7 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
       addr('Account',      'Account'),
       hex ('LoanBrokerID', 'Loan Broker ID', true),
       addr('Holder',       'Holder', true),
-      txt ('Amount',       'Amount'),
+      amt ('Amount',       'Amount'),
     ]),
   },
   {
@@ -846,7 +840,7 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
       addr('Account',                              'Account (Broker Submitter)'),
       hex ('LoanBrokerID',                         'Loan Broker ID', true),
       addr('Borrower',                             'Borrower',       true),
-      txt ('Principal',                            'Principal',      true),
+      amt ('Principal',                            'Principal',      true),
       num ('AnnualInterestRate',                   'Annual Interest Rate (bps)', true),
       num ('Term',                                 'Term (seconds)',             true),
       hex ('CounterpartySignature_SigningPubKey',   'Counterparty Pub Key',       true),
@@ -860,7 +854,7 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: withCommon([
       addr('Account', 'Account'),
       hex ('LoanID',  'Loan ID', true),
-      txt ('Amount',  'Amount',  true),
+      amt ('Amount',  'Amount',  true),
       bool('tfPayInterestOnly', 'Pay Interest Only'),
       flags(),
     ]),

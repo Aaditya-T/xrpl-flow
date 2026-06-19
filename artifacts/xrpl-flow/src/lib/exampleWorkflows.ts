@@ -25,7 +25,7 @@ export const EXAMPLE_WORKFLOWS: ExampleWorkflow[] = [
           config: {
             Account: '',
             Destination: '',
-            Amount: '1000000',
+            Amount: { type: 'xrp', drops: '1000000' },
           },
         },
       },
@@ -89,7 +89,7 @@ export const EXAMPLE_WORKFLOWS: ExampleWorkflow[] = [
           config: {
             Account: '',
             Destination: '',
-            Amount: '{"currency":"USD","issuer":"","value":"100"}',
+            Amount: { type: 'token', currency: 'USD', issuer: '', value: '100' },
           },
         },
       },
@@ -128,7 +128,7 @@ export const EXAMPLE_WORKFLOWS: ExampleWorkflow[] = [
           config: {
             Account: '',
             Destination: '',
-            Amount: '500000',
+            Amount: { type: 'xrp', drops: '500000' },
           },
         },
       },
@@ -139,7 +139,7 @@ export const EXAMPLE_WORKFLOWS: ExampleWorkflow[] = [
           config: {
             Account: '',
             Destination: '',
-            Amount: '500000',
+            Amount: { type: 'xrp', drops: '500000' },
           },
         },
       },
@@ -188,7 +188,7 @@ export const EXAMPLE_WORKFLOWS: ExampleWorkflow[] = [
           config: {
             Account: '',
             Destination: '',
-            Amount: '100000',
+            Amount: { type: 'xrp', drops: '100000' },
           },
         },
       },
@@ -219,7 +219,7 @@ export const EXAMPLE_WORKFLOWS: ExampleWorkflow[] = [
           config: {
             Account: '',
             Destination: '',
-            Amount: '500000',
+            Amount: { type: 'xrp', drops: '500000' },
           },
         },
       },
@@ -240,7 +240,7 @@ export const EXAMPLE_WORKFLOWS: ExampleWorkflow[] = [
           config: {
             Account: '',
             Destination: '',
-            Amount: '500000',
+            Amount: { type: 'xrp', drops: '500000' },
           },
         },
       },
@@ -272,7 +272,7 @@ export const EXAMPLE_WORKFLOWS: ExampleWorkflow[] = [
           config: {
             Account: '',
             Destination: '',
-            Amount: '1000000',
+            Amount: { type: 'xrp', drops: '1000000' },
           },
         },
       },
@@ -330,7 +330,7 @@ export const EXAMPLE_WORKFLOWS: ExampleWorkflow[] = [
           config: {
             Account: '',
             Destination: '',
-            Amount: '1000000',
+            Amount: { type: 'xrp', drops: '1000000' },
           },
         },
       },
@@ -342,8 +342,8 @@ export const EXAMPLE_WORKFLOWS: ExampleWorkflow[] = [
           label: 'Inner OfferCreate',
           config: {
             Account: '',
-            TakerPays: '1000000',
-            TakerGets: '{"currency":"USD","issuer":"","value":"1"}',
+            TakerPays: { type: 'xrp', drops: '1000000' },
+            TakerGets: { type: 'token', currency: 'USD', issuer: '', value: '1' },
           },
         },
       },
@@ -385,7 +385,7 @@ export const EXAMPLE_WORKFLOWS: ExampleWorkflow[] = [
           config: {
             Account: '',
             NFTokenID: '',
-            Amount: '1000000',
+            Amount: { type: 'xrp', drops: '1000000' },
             tfSellNFToken: true,
           },
         },
@@ -428,8 +428,8 @@ export const EXAMPLE_WORKFLOWS: ExampleWorkflow[] = [
           label: 'AMMCreate (XRP/USD)',
           config: {
             Account: '',
-            Amount: '10000000',
-            Amount2: '{"currency":"USD","issuer":"","value":"10"}',
+            Amount: { type: 'xrp', drops: '10000000' },
+            Amount2: { type: 'token', currency: 'USD', issuer: '', value: '10' },
             TradingFee: 500,
           },
         },

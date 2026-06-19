@@ -214,8 +214,14 @@ function buildTx(
   fallbackWallet: WalletInfo,
   innerBatch = false,
 ): Record<string, any> {
-  const cfg  = getConfig(node);
-  const type = node.type as string;
+  const cfg     = getConfig(node);
+  const type    = node.type as string;
+  const nodeDef = getNodeDef(type);
+
+  // Collect 'amount' field names so the main loop skips them (assembled below)
+  const amountFieldNames = new Set(
+    (nodeDef?.fields || []).filter(f => f.type === 'amount').map(f => f.name),
+  );
 
   const tx: Record<string, any> = {
     TransactionType: type,
@@ -234,16 +240,34 @@ function buildTx(
     'Account', 'LimitAmount_currency', 'LimitAmount_issuer', 'LimitAmount_value',
   ]);
   for (const [k, v] of Object.entries(cfg)) {
-    if (skipKeys.has(k) || v === '' || v === null || v === undefined) continue;
-    if (typeof v === 'boolean') {
-      // Boolean flag helpers — skip, they are handled via Flags bitmask in engine
-      // (node config uses named booleans for UX; engine keeps Flags as-is)
-      continue;
-    }
+    if (skipKeys.has(k)) continue;
+    if (amountFieldNames.has(k)) continue; // assembled separately below
+    if (v === '' || v === null || v === undefined) continue;
+    if (typeof v === 'boolean') continue; // boolean helpers handled via Flags bitmask
     if (innerBatch && (k === 'Fee' || k === 'Sequence')) continue;
     tx[k] = v;
   }
 
+  // Assemble structured amount fields: { type:'xrp', drops:'...' } | { type:'token', currency, issuer, value }
+  for (const fieldName of amountFieldNames) {
+    const amtData = cfg[fieldName];
+    if (!amtData) continue;
+    if (typeof amtData === 'string') {
+      // Backward-compat: plain drops string or raw JSON string
+      if (amtData.trim()) tx[fieldName] = amtData;
+    } else if (amtData?.type === 'xrp') {
+      if (amtData.drops !== undefined && amtData.drops !== '') {
+        tx[fieldName] = String(amtData.drops);
+      }
+    } else if (amtData?.type === 'token') {
+      const { currency = '', issuer = '', value: amtVal = '' } = amtData;
+      if (currency && issuer && amtVal) {
+        tx[fieldName] = { currency, issuer, value: String(amtVal) };
+      }
+    }
+  }
+
+  // TrustSet: LimitAmount assembled from three flat sub-fields
   if (type === 'TrustSet') {
     tx.LimitAmount = {
       currency: cfg.LimitAmount_currency || '',
@@ -252,6 +276,7 @@ function buildTx(
     };
   }
 
+  // JSON textarea fields
   for (const field of [
     'SignerEntries', 'AuthAccounts', 'NFTokenOffers',
     'PriceDataSeries', 'AcceptedCredentials', 'Memos', 'Signers', 'Paths',

@@ -4,6 +4,81 @@ import { getNodeDef, FieldDef } from '@/lib/nodeRegistry';
 import { useWorkflowStore } from '@/store/workflowStore';
 import { cn } from '@/lib/utils';
 
+function AmountInput({ field, value, onChange }: {
+  field: FieldDef;
+  value: any;
+  onChange: (val: any) => void;
+}) {
+  const baseInput = 'w-full bg-[#0e1018] border border-[#1e2130] rounded text-[11px] text-slate-200 px-2 py-1.5 outline-none focus:border-blue-500/50 placeholder:text-slate-600 font-mono';
+  const amtType = value?.type || 'xrp';
+
+  const setField = (key: string, val: string) =>
+    onChange({ type: amtType, ...value, [key]: val });
+
+  return (
+    <div className="space-y-1.5">
+      {/* XRP / Token toggle */}
+      <div className="flex rounded overflow-hidden border border-[#1e2130] text-[10px]">
+        <button
+          type="button"
+          onClick={() => onChange({ type: 'xrp', drops: value?.drops || '' })}
+          className={cn(
+            'flex-1 py-1 font-mono transition-colors',
+            amtType === 'xrp'
+              ? 'bg-blue-600/30 text-blue-300 border-r border-[#1e2130]'
+              : 'bg-[#0e1018] text-slate-500 hover:text-slate-300 border-r border-[#1e2130]',
+          )}
+        >
+          XRP
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange({ type: 'token', currency: value?.currency || '', issuer: value?.issuer || '', value: value?.value || '' })}
+          className={cn(
+            'flex-1 py-1 font-mono transition-colors',
+            amtType === 'token'
+              ? 'bg-blue-600/30 text-blue-300'
+              : 'bg-[#0e1018] text-slate-500 hover:text-slate-300',
+          )}
+        >
+          Token (IOU)
+        </button>
+      </div>
+
+      {amtType === 'xrp' ? (
+        <input
+          type="number"
+          value={value?.drops ?? ''}
+          onChange={e => setField('drops', e.target.value)}
+          placeholder="drops  (1 XRP = 1,000,000)"
+          className={baseInput}
+        />
+      ) : (
+        <div className="space-y-1">
+          <input
+            value={value?.currency ?? ''}
+            onChange={e => setField('currency', e.target.value.toUpperCase())}
+            placeholder="Currency  e.g. USD  (hex if > 3 chars)"
+            className={baseInput}
+          />
+          <input
+            value={value?.issuer ?? ''}
+            onChange={e => setField('issuer', e.target.value)}
+            placeholder="Issuer address  r…"
+            className={baseInput}
+          />
+          <input
+            value={value?.value ?? ''}
+            onChange={e => setField('value', e.target.value)}
+            placeholder="Value  e.g. 100"
+            className={baseInput}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FieldInput({ field, value, onChange, activeAddress }: {
   field: FieldDef;
   value: any;
@@ -11,6 +86,10 @@ function FieldInput({ field, value, onChange, activeAddress }: {
   activeAddress: string;
 }) {
   const baseInput = 'w-full bg-[#0e1018] border border-[#1e2130] rounded text-[11px] text-slate-200 px-2 py-1.5 outline-none focus:border-blue-500/50 placeholder:text-slate-600 font-mono';
+
+  if (field.type === 'amount') {
+    return <AmountInput field={field} value={value} onChange={onChange} />;
+  }
 
   if (field.type === 'boolean') {
     return (
@@ -101,11 +180,16 @@ export function ConfigPanel() {
   useEffect(() => {
     if (node) {
       const cfg = (node.data?.config as Record<string, any>) || {};
-      // Populate defaults for unset fields
       const withDefaults: Record<string, any> = {};
       if (def) {
         for (const f of def.fields) {
-          withDefaults[f.name] = cfg[f.name] !== undefined ? cfg[f.name] : (f.defaultValue ?? '');
+          if (f.type === 'amount') {
+            withDefaults[f.name] = cfg[f.name] !== undefined
+              ? cfg[f.name]
+              : (f.defaultValue ?? { type: 'xrp', drops: '' });
+          } else {
+            withDefaults[f.name] = cfg[f.name] !== undefined ? cfg[f.name] : (f.defaultValue ?? '');
+          }
         }
       }
       setLocalConfig({ ...cfg, ...withDefaults });
