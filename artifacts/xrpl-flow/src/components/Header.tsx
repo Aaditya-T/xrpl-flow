@@ -114,6 +114,7 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
           setNodeStatus,
           addLogEntry,
           getExplorerUrl: (hash) => `${EXPLORER_URLS[network]}${hash}`,
+          network,
         }
       );
     } catch (e: any) {
