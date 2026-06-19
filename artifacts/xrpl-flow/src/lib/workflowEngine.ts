@@ -777,15 +777,56 @@ export async function runWorkflow(
     nodes.filter(n => n.parentId !== undefined).map(n => n.id),
   );
 
-  const inFlight = new Map<string, Promise<any>>();
+  const inFlight   = new Map<string, Promise<any>>();
+  // SyncJoin: count how many predecessors have arrived at each join node
+  const sjArrivals = new Map<string, number>();
+  // SyncJoin: deferred resolvers for early-arriving predecessors
+  const sjWaiters  = new Map<string, Array<{ resolve: (v: any) => void; reject: (e: any) => void }>>();
 
   async function runNode(nodeId: string, input: any): Promise<any> {
     checkAbort(signal);
     if (innerBatchIds.has(nodeId)) return input;
-    if (inFlight.has(nodeId)) return inFlight.get(nodeId);
 
     const node = nodeMap.get(nodeId);
     if (!node) return input;
+
+    // ── SyncJoin: arrival-counting to avoid circular inFlight dependency ──
+    if ((node.type as string) === 'SyncJoin') {
+      const predCount = (predecessors.get(nodeId) || []).length;
+      const arrivals  = (sjArrivals.get(nodeId) || 0) + 1;
+      sjArrivals.set(nodeId, arrivals);
+
+      if (arrivals < predCount) {
+        // Not the last predecessor to arrive — park and wait
+        return new Promise<any>((resolve, reject) => {
+          const list = sjWaiters.get(nodeId) || [];
+          list.push({ resolve, reject });
+          sjWaiters.set(nodeId, list);
+          signal?.addEventListener('abort', () => {
+            reject(new DOMException('Workflow stopped by user.', 'AbortError'));
+          }, { once: true });
+        });
+      }
+
+      // Last predecessor arrived — execute SyncJoin then run successors
+      const succs = successors.get(nodeId) || [];
+      try {
+        const { output } = await executeNode(
+          node, input, nodes, client, activeWalletInfo, walletList, cbs,
+          innerBatchIds, nodeMap, successors, signal,
+        );
+        const result = await Promise.all(succs.map(sid => runNode(sid, output)));
+        // Unblock all parked callers
+        for (const w of (sjWaiters.get(nodeId) || [])) w.resolve(result);
+        return result;
+      } catch (e) {
+        for (const w of (sjWaiters.get(nodeId) || [])) w.reject(e);
+        throw e;
+      }
+    }
+
+    // ── Normal cached execution for all other nodes ──
+    if (inFlight.has(nodeId)) return inFlight.get(nodeId);
 
     const promise = executeNode(
       node, input, nodes, client, activeWalletInfo, walletList, cbs,
@@ -802,12 +843,6 @@ export async function runWorkflow(
 
       if ((node.type as string) === 'ParallelSplit') {
         return Promise.all(succs.map(sid => runNode(sid, output)));
-      }
-
-      if ((node.type as string) === 'SyncJoin') {
-        const preds = predecessors.get(nodeId) || [];
-        return Promise.all(preds.map(pid => inFlight.get(pid) || Promise.resolve()))
-          .then(() => Promise.all(succs.map(sid => runNode(sid, output))));
       }
 
       if ((node.type as string) === 'Loop') {
