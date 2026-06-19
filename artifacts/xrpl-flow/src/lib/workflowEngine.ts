@@ -10,16 +10,22 @@ export type ExecutionCallbacks = {
   network: NetworkType;
 };
 
-/** XRPL Batch execution mode flags */
+/**
+ * Outer Batch envelope execution-mode flags (BatchFlags in xrpl.js).
+ * Source: https://github.com/XRPLF/xrpl.js/blob/main/packages/xrpl/src/models/transactions/batch.ts
+ */
 const BATCH_MODE_FLAGS: Record<string, number> = {
-  ALLORNOTHING: 0x00000001,
-  ONLYONE:      0x00000002,
-  UNTILFAILURE: 0x00000004,
-  INDEPENDENT:  0x00000008,
+  ALLORNOTHING: 0x00010000,
+  ONLYONE:      0x00020000,
+  UNTILFAILURE: 0x00040000,
+  INDEPENDENT:  0x00080000,
 };
 
-/** Inner batch transaction flag */
-const TF_INNER_BATCH_TXN = 0x00010000;
+/**
+ * Inner-batch transaction flag (GlobalFlags.tfInnerBatchTxn in xrpl.js).
+ * Value: 0x40000000
+ */
+const TF_INNER_BATCH_TXN = 0x40000000;
 
 const NON_TX_TYPES = new Set([
   'ManualTrigger', 'AccountEventTrigger',
@@ -73,11 +79,11 @@ function buildTx(node: Node, activeWallet: WalletInfo, innerBatch = false): Reco
   };
 
   if (innerBatch) {
-    tx.Flags         = TF_INNER_BATCH_TXN;
-    tx.Fee           = '0';
-    tx.Sequence      = 0;
-    tx.SigningPubKey  = '';
-    tx.TxnSignature  = '';
+    tx.Flags        = TF_INNER_BATCH_TXN;
+    tx.Fee          = '0';
+    tx.Sequence     = 0;
+    tx.SigningPubKey = '';     // empty string = no key (required by Batch spec)
+    tx.TxnSignature = null;   // null = unsigned inner tx (xrpl.js Batch validation requirement)
   }
 
   const skipKeys = new Set(['Account', 'LimitAmount_currency', 'LimitAmount_issuer', 'LimitAmount_value']);

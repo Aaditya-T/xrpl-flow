@@ -246,6 +246,7 @@ export const useWorkflowStore = create<WorkflowState>()(
     },
     loadInitialWorkflows: (workflows) => {
       set((state) => { state.savedWorkflows = workflows; });
+      try { localStorage.setItem('xrplFlow_workflows', JSON.stringify(workflows)); } catch { /* ignore */ }
     },
   }))
 );
