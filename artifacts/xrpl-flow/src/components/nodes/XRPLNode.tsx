@@ -1,6 +1,6 @@
-import { memo } from 'react';
-import { Handle, Position, NodeProps } from '@xyflow/react';
-import { Zap, ArrowRightLeft, Repeat2, GitFork, Clock, Layers, Shield, Database, Globe, BarChart2, Landmark, Coins, FileCheck, GitMerge, AlertTriangle, Hash, Link, Terminal, Flame } from 'lucide-react';
+import { memo, useState } from 'react';
+import { Handle, Position, NodeProps, useReactFlow } from '@xyflow/react';
+import { Zap, ArrowRightLeft, Repeat2, GitFork, Layers, Shield, Database, Globe, BarChart2, Landmark, Coins, FileCheck, AlertTriangle, Hash, Terminal, Flame, X } from 'lucide-react';
 import { getNodeDef } from '@/lib/nodeRegistry';
 import { useWorkflowStore } from '@/store/workflowStore';
 import { cn } from '@/lib/utils';
@@ -35,8 +35,10 @@ function XRPLNodeInner({ id, type, data, selected }: NodeProps) {
   const nodeData = data as XRPLNodeData;
   const def = getNodeDef(type as string);
   const { nodeStatus, network } = useWorkflowStore();
+  const { deleteElements } = useReactFlow();
   const statusInfo = nodeStatus[id];
   const status = statusInfo?.status || 'idle';
+  const [hovered, setHovered] = useState(false);
 
   const color = def?.color || '#6b7280';
   const category = def?.category || 'Control Flow';
@@ -66,6 +68,8 @@ function XRPLNodeInner({ id, type, data, selected }: NodeProps) {
         devnetWarning && 'opacity-50',
       )}
       data-testid={`node-${id}`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
       {/* Left color accent */}
       <div className="absolute left-0 top-0 bottom-0 w-[3px]" style={{ backgroundColor: color }} />
@@ -95,8 +99,8 @@ function XRPLNodeInner({ id, type, data, selected }: NodeProps) {
         </div>
       )}
 
-      {/* Badges */}
-      <div className="absolute top-1.5 right-1.5 flex gap-1">
+      {/* Badges + delete button */}
+      <div className="absolute top-1.5 right-1.5 flex gap-1 items-center">
         {isDevnetOnly && (
           <span className="text-[8px] font-mono bg-lime-900/60 text-lime-400 border border-lime-800/50 px-1 py-0.5 rounded">
             DEVNET
@@ -106,6 +110,18 @@ function XRPLNodeInner({ id, type, data, selected }: NodeProps) {
           <span className="text-[8px] font-mono bg-red-900/60 text-red-400 border border-red-800/50 px-1 py-0.5 rounded flex items-center gap-0.5">
             <AlertTriangle size={7} />PENDING
           </span>
+        )}
+        {(hovered || selected) && (
+          <button
+            className="flex items-center justify-center w-4 h-4 rounded bg-[#1e2130] hover:bg-red-600/80 text-slate-400 hover:text-white transition-colors nodrag"
+            title="Delete node"
+            onMouseDown={e => {
+              e.stopPropagation();
+              deleteElements({ nodes: [{ id }] });
+            }}
+          >
+            <X size={9} />
+          </button>
         )}
       </div>
 

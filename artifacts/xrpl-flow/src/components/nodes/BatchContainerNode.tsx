@@ -1,6 +1,6 @@
-import { memo } from 'react';
-import { Handle, Position, NodeProps, NodeResizer } from '@xyflow/react';
-import { Layers, AlertTriangle } from 'lucide-react';
+import { memo, useState } from 'react';
+import { Handle, Position, NodeProps, NodeResizer, useReactFlow } from '@xyflow/react';
+import { Layers, AlertTriangle, X } from 'lucide-react';
 import { useWorkflowStore } from '@/store/workflowStore';
 
 const BATCH_COLOR = '#ef4444';
@@ -14,6 +14,8 @@ interface BatchContainerData {
 function BatchContainerNodeInner({ id, data, selected }: NodeProps) {
   const d = data as BatchContainerData;
   const { nodeStatus, network } = useWorkflowStore();
+  const { deleteElements } = useReactFlow();
+  const [hovered, setHovered] = useState(false);
   const statusInfo = nodeStatus[id];
   const status = statusInfo?.status || 'idle';
   const mode = d.config?.ExecutionMode || 'ALLORNOTHING';
@@ -29,6 +31,8 @@ function BatchContainerNodeInner({ id, data, selected }: NodeProps) {
     <div
       className={`relative w-full h-full rounded-lg border-2 ${statusBorder} bg-red-950/10`}
       data-testid={`batch-node-${id}`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
       <NodeResizer
         color={BATCH_COLOR}
@@ -50,6 +54,18 @@ function BatchContainerNodeInner({ id, data, selected }: NodeProps) {
           <span className="text-[8px] font-mono bg-lime-900/60 text-lime-400 border border-lime-800/50 px-1 py-0.5 rounded flex items-center gap-0.5">
             <AlertTriangle size={7} />DEVNET
           </span>
+        )}
+        {(hovered || selected) && (
+          <button
+            className="flex items-center justify-center w-4 h-4 rounded bg-[#1e2130] hover:bg-red-600/80 text-slate-400 hover:text-white transition-colors nodrag"
+            title="Delete batch container"
+            onMouseDown={e => {
+              e.stopPropagation();
+              deleteElements({ nodes: [{ id }] });
+            }}
+          >
+            <X size={9} />
+          </button>
         )}
       </div>
 

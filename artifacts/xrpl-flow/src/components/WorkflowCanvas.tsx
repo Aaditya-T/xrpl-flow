@@ -258,7 +258,7 @@ function Canvas() {
             fitViewOptions={{ padding: 0.15 }}
             defaultEdgeOptions={{ style: { stroke: 'hsl(210 100% 50% / 0.5)', strokeWidth: 1.5 } }}
             connectionLineStyle={{ stroke: '#0085ff', strokeWidth: 1.5 }}
-            deleteKeyCode="Delete"
+            deleteKeyCode={['Delete', 'Backspace']}
             snapToGrid={true}
             snapGrid={[10, 10]}
           >
@@ -285,7 +285,7 @@ function Canvas() {
               <div className="text-center">
                 <p className="text-[13px] text-slate-600 font-medium">Drop nodes from the palette</p>
                 <p className="text-[11px] text-slate-700 mt-1">or load an example workflow from the header</p>
-                <p className="text-[10px] text-slate-700 mt-1 font-mono">⌘S save · ⌘Z undo · Del delete</p>
+                <p className="text-[10px] text-slate-700 mt-1 font-mono">⌘S save · ⌘Z undo · hover node → × to delete</p>
               </div>
             </div>
           )}
