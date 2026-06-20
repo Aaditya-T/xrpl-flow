@@ -2,12 +2,15 @@ import * as XRPL from 'xrpl';
 import { Node, Edge } from '@xyflow/react';
 import { WalletInfo, LogEntry, NetworkType } from '@/store/workflowStore';
 import { getNodeDef } from '@/lib/nodeRegistry';
+import { buildValidatedTransaction, getTransactionAdapter } from '@/lib/transactionAdapters';
+import { evaluateSafeExpression } from '@/lib/safeExpression';
 
 export type ExecutionCallbacks = {
   setNodeStatus: (id: string, status: 'idle'|'running'|'success'|'failed', error?: string) => void;
   addLogEntry: (entry: Omit<LogEntry, 'id'|'timestamp'>) => void;
   getExplorerUrl: (hash: string) => string;
   network: NetworkType;
+  reviewTransaction?: (transaction: Record<string, unknown>, simulation: unknown, signerAddresses: string[], nodeId: string, nodeLabel: string) => Promise<boolean>;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -41,11 +44,19 @@ export interface ValidationError {
  */
 export function validateWorkflow(nodes: Node[]): ValidationError[] {
   const errors: ValidationError[] = [];
+  const triggerTypes = new Set(['ManualTrigger', 'AccountEventTrigger']);
+  const triggers = nodes.filter(node => triggerTypes.has(node.type as string));
+  if (triggers.length !== 1) {
+    errors.push({ nodeId: '', nodeLabel: 'Workflow', fieldLabel: `Exactly one trigger is required (found ${triggers.length})` });
+  }
 
   for (const node of nodes) {
     if (NON_TX_TYPES.has(node.type as string)) continue;
     const def = getNodeDef(node.type as string);
-    if (!def) continue;
+    if (!def) {
+      errors.push({ nodeId: node.id, nodeLabel: getNodeLabel(node), fieldLabel: `Unsupported node type: ${String(node.type)}` });
+      continue;
+    }
 
     const cfg   = getConfig(node);
     const label = getNodeLabel(node);
@@ -68,9 +79,94 @@ export function validateWorkflow(nodes: Node[]): ValidationError[] {
         }
       }
     }
+    const adapter = getTransactionAdapter(node.type as string);
+    if (adapter) {
+      for (const message of adapter.validate(cfg, 'rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh')) {
+        if (!errors.some(error => error.nodeId === node.id && message.includes(error.fieldLabel))) {
+          errors.push({ nodeId: node.id, nodeLabel: label, fieldLabel: message });
+        }
+      }
+    }
   }
 
   return errors;
+}
+
+export function validateWorkflowStructure(nodes: Node[], edges: Edge[]): ValidationError[] {
+  const errors: ValidationError[] = [];
+  const triggerTypes = new Set(['ManualTrigger', 'AccountEventTrigger']);
+  const triggers = nodes.filter(node => triggerTypes.has(node.type as string));
+  if (triggers.length !== 1) errors.push({ nodeId: '', nodeLabel: 'Workflow', fieldLabel: `Exactly one trigger is required (found ${triggers.length})` });
+  const nodeMap = new Map(nodes.map(node => [node.id, node]));
+  const edgeKeys = new Set<string>();
+  const outgoing = new Map<string, Edge[]>();
+  for (const edge of edges) {
+    if (!nodeMap.has(edge.source) || !nodeMap.has(edge.target)) {
+      errors.push({ nodeId: edge.source, nodeLabel: 'Workflow', fieldLabel: `Edge ${edge.id} references a missing node` });
+      continue;
+    }
+    const key = `${edge.source}:${edge.sourceHandle || ''}:${edge.target}`;
+    if (edgeKeys.has(key)) errors.push({ nodeId: edge.source, nodeLabel: getNodeLabel(nodeMap.get(edge.source)!), fieldLabel: 'Duplicate edge' });
+    edgeKeys.add(key);
+    const source = nodeMap.get(edge.source)!;
+    const target = nodeMap.get(edge.target)!;
+    if (source.parentId || target.parentId) {
+      errors.push({ nodeId: edge.source, nodeLabel: getNodeLabel(source), fieldLabel: 'Container child nodes cannot have outer graph edges' });
+    }
+    if (target.type === 'ManualTrigger' || target.type === 'AccountEventTrigger') {
+      errors.push({ nodeId: edge.target, nodeLabel: getNodeLabel(target), fieldLabel: 'Trigger nodes cannot have incoming edges' });
+    }
+    if (source.type === 'ConditionBranch') {
+      if (edge.sourceHandle !== 'true' && edge.sourceHandle !== 'false') errors.push({ nodeId: source.id, nodeLabel: getNodeLabel(source), fieldLabel: 'Condition edges must use the true or false handle' });
+    } else if (edge.sourceHandle) {
+      errors.push({ nodeId: source.id, nodeLabel: getNodeLabel(source), fieldLabel: `Unexpected source handle: ${edge.sourceHandle}` });
+    }
+    if (edge.targetHandle) errors.push({ nodeId: target.id, nodeLabel: getNodeLabel(target), fieldLabel: `Unexpected target handle: ${edge.targetHandle}` });
+    outgoing.set(edge.source, [...(outgoing.get(edge.source) || []), edge]);
+  }
+  for (const node of nodes.filter(item => !item.parentId)) {
+    const count = (outgoing.get(node.id) || []).length;
+    if (count > 1 && node.type !== 'ConditionBranch' && node.type !== 'ParallelSplit') {
+      errors.push({ nodeId: node.id, nodeLabel: getNodeLabel(node), fieldLabel: 'Only branch nodes may have multiple outgoing edges' });
+    }
+    if (node.type === 'ParallelSplit' && count < 2) errors.push({ nodeId: node.id, nodeLabel: getNodeLabel(node), fieldLabel: 'Parallel Split requires at least two outgoing branches' });
+    if (node.type === 'ConditionBranch') {
+      const handles = (outgoing.get(node.id) || []).map(edge => edge.sourceHandle);
+      if (handles.filter(handle => handle === 'true').length > 1 || handles.filter(handle => handle === 'false').length > 1) {
+        errors.push({ nodeId: node.id, nodeLabel: getNodeLabel(node), fieldLabel: 'Condition Branch allows at most one edge per handle' });
+      }
+    }
+  }
+
+  const trigger = nodes.find(node => node.type === 'ManualTrigger' || node.type === 'AccountEventTrigger');
+  const visited = new Set<string>();
+  const active = new Set<string>();
+  const visit = (id: string) => {
+    if (active.has(id)) {
+      errors.push({ nodeId: id, nodeLabel: getNodeLabel(nodeMap.get(id)!), fieldLabel: 'Cycles are not allowed; use a Loop Container' });
+      return;
+    }
+    if (visited.has(id)) return;
+    visited.add(id); active.add(id);
+    for (const edge of outgoing.get(id) || []) visit(edge.target);
+    active.delete(id);
+  };
+  if (trigger) visit(trigger.id);
+  for (const node of nodes.filter(item => !item.parentId)) {
+    if (trigger && !visited.has(node.id)) errors.push({ nodeId: node.id, nodeLabel: getNodeLabel(node), fieldLabel: 'Node is unreachable from the trigger' });
+  }
+  return errors;
+}
+
+export function validateWorkflowGraph(nodes: Node[], edges: Edge[]): ValidationError[] {
+  const all = [...validateWorkflow(nodes), ...validateWorkflowStructure(nodes, edges)];
+  const seen = new Set<string>();
+  return all.filter(error => {
+    const key = `${error.nodeId}:${error.fieldLabel}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -158,21 +254,61 @@ function isTerminalFailure(code: string): boolean {
 async function submitWithFastFail(
   client: XRPL.Client,
   tx: Record<string, any>,
-  wallet: XRPL.Wallet,
+  wallet: XRPL.Wallet | XRPL.Wallet[],
   onPrelim: (code: string, msg: string) => void,
   signal?: AbortSignal,
+  review?: { callback: NonNullable<ExecutionCallbacks['reviewTransaction']>; signerAddresses: string[]; nodeId: string; nodeLabel: string },
+  counterpartyWallet?: XRPL.Wallet,
+  batchWallets?: Map<string, XRPL.Wallet>,
 ): Promise<any> {
   checkAbort(signal);
 
   // Phase 1: autofill + sign + submit
-  const filled = await client.autofill(tx as any);
-  const signed = wallet.sign(filled as any);
+  let filled = await client.autofill(tx as any);
+  if (filled.TransactionType === 'Batch' && batchWallets && batchWallets.size > 0) {
+    const partials: XRPL.Batch[] = [];
+    for (const [account, batchWallet] of batchWallets) {
+      const partial = structuredClone(filled) as XRPL.Batch;
+      XRPL.signMultiBatch(batchWallet, partial, { batchAccount: account });
+      partials.push(partial);
+    }
+    filled = XRPL.decode(XRPL.combineBatchSigners(partials)) as typeof filled;
+  }
+  XRPL.validate(filled as Record<string, unknown>);
+  if (review) {
+    let simulation: unknown;
+    try { simulation = (await client.simulate(filled as XRPL.SubmittableTransaction)).result; } catch { simulation = undefined; }
+    const snapshot = JSON.stringify(filled);
+    const approved = await review.callback(filled as Record<string, unknown>, simulation, review.signerAddresses, review.nodeId, review.nodeLabel);
+    if (!approved) throw new DOMException('Transaction review cancelled.', 'AbortError');
+    if (snapshot !== JSON.stringify(filled)) throw new Error('Transaction changed after review; refusing to sign.');
+  }
+  let signed: { tx_blob: string; hash: string };
+  if (Array.isArray(wallet)) {
+    if (wallet.length === 0) throw new Error('Select at least one local multisigner.');
+    const accountInfo = await client.request({ command: 'account_info', account: String(filled.Account), signer_lists: true, ledger_index: 'validated' } as any);
+    const signerList = (accountInfo.result as any)?.account_data?.signer_lists?.[0] || (accountInfo.result as any)?.signer_lists?.[0];
+    if (!signerList) throw new Error(`Account ${String(filled.Account)} has no signer list.`);
+    const entries = signerList.SignerEntries || [];
+    const selected = new Set(wallet.map(item => item.address));
+    const weight = entries.reduce((sum: number, entry: any) => selected.has(entry.SignerEntry?.Account) ? sum + Number(entry.SignerEntry.SignerWeight || 0) : sum, 0);
+    if (weight < Number(signerList.SignerQuorum)) throw new Error(`Selected signer weight ${weight} does not meet quorum ${signerList.SignerQuorum}.`);
+    const blobs = wallet.map(item => item.sign({ ...filled, SigningPubKey: '' } as any, true).tx_blob);
+    const txBlob = XRPL.multisign(blobs);
+    signed = { tx_blob: txBlob, hash: XRPL.hashes.hashSignedTx(txBlob) };
+  } else {
+    signed = wallet.sign(filled as any);
+  }
+  if (filled.TransactionType === 'LoanSet') {
+    if (!counterpartyWallet) throw new Error('LoanSet requires a selected local counterparty wallet.');
+    signed = XRPL.signLoanSetByCounterparty(counterpartyWallet, signed.tx_blob);
+  }
 
   checkAbort(signal);
 
   const submitRes = await client.request({
     command:  'submit',
-    tx_blob:  signed.tx_blob,
+    tx_blob: signed.tx_blob,
   } as any);
 
   const prelim    = (submitRes.result as any)?.engine_result    as string ?? '';
@@ -235,8 +371,6 @@ const BATCH_MODE_FLAGS: Record<string, number> = {
   INDEPENDENT:  0x00080000,
 };
 
-const TF_INNER_BATCH_TXN = 0x40000000;
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -244,7 +378,7 @@ const TF_INNER_BATCH_TXN = 0x40000000;
 const NON_TX_TYPES = new Set([
   'ManualTrigger', 'AccountEventTrigger',
   'ConditionBranch', 'ParallelSplit', 'SyncJoin',
-  'Loop', 'Delay', 'LogOutput', 'BatchContainer',
+  'LoopContainer', 'Delay', 'LogOutput', 'BatchContainer',
 ]);
 
 function getNodeLabel(node: Node): string {
@@ -272,12 +406,7 @@ function buildGraph(nodes: Node[], edges: Edge[]) {
 }
 
 function evalCondition(expr: string, output: any): boolean {
-  try {
-    // eslint-disable-next-line no-new-func
-    return Boolean(new Function('output', `"use strict"; return (${expr});`)(output));
-  } catch {
-    return false;
-  }
+  return evaluateSafeExpression(expr, output);
 }
 
 /** Build XRPL transaction object from a node's config */
@@ -286,79 +415,7 @@ function buildTx(
   fallbackWallet: WalletInfo,
   innerBatch = false,
 ): Record<string, any> {
-  const cfg     = getConfig(node);
-  const type    = node.type as string;
-  const nodeDef = getNodeDef(type);
-
-  // Collect 'amount' field names so the main loop skips them (assembled below)
-  const amountFieldNames = new Set(
-    (nodeDef?.fields || []).filter(f => f.type === 'amount').map(f => f.name),
-  );
-
-  const tx: Record<string, any> = {
-    TransactionType: type,
-    Account: cfg.Account || fallbackWallet.address,
-  };
-
-  if (innerBatch) {
-    tx.Flags        = TF_INNER_BATCH_TXN;
-    tx.Fee          = '0';
-    tx.Sequence     = 0;
-    tx.SigningPubKey = '';
-    tx.TxnSignature = null;
-  }
-
-  const skipKeys = new Set([
-    'Account', 'LimitAmount_currency', 'LimitAmount_issuer', 'LimitAmount_value',
-  ]);
-  for (const [k, v] of Object.entries(cfg)) {
-    if (skipKeys.has(k)) continue;
-    if (amountFieldNames.has(k)) continue; // assembled separately below
-    if (v === '' || v === null || v === undefined) continue;
-    if (typeof v === 'boolean') continue; // boolean helpers handled via Flags bitmask
-    if (innerBatch && (k === 'Fee' || k === 'Sequence')) continue;
-    tx[k] = v;
-  }
-
-  // Assemble structured amount fields: { type:'xrp', drops:'...' } | { type:'token', currency, issuer, value }
-  for (const fieldName of amountFieldNames) {
-    const amtData = cfg[fieldName];
-    if (!amtData) continue;
-    if (typeof amtData === 'string') {
-      // Backward-compat: plain drops string or raw JSON string
-      if (amtData.trim()) tx[fieldName] = amtData;
-    } else if (amtData?.type === 'xrp') {
-      if (amtData.drops !== undefined && amtData.drops !== '') {
-        tx[fieldName] = String(amtData.drops);
-      }
-    } else if (amtData?.type === 'token') {
-      const { currency = '', issuer = '', value: amtVal = '' } = amtData;
-      if (currency && issuer && amtVal) {
-        tx[fieldName] = { currency, issuer, value: String(amtVal) };
-      }
-    }
-  }
-
-  // TrustSet: LimitAmount assembled from three flat sub-fields
-  if (type === 'TrustSet') {
-    tx.LimitAmount = {
-      currency: cfg.LimitAmount_currency || '',
-      issuer:   cfg.LimitAmount_issuer   || '',
-      value:    cfg.LimitAmount_value    || '0',
-    };
-  }
-
-  // JSON textarea fields
-  for (const field of [
-    'SignerEntries', 'AuthAccounts', 'NFTokenOffers',
-    'PriceDataSeries', 'AcceptedCredentials', 'Memos', 'Signers', 'Paths',
-  ]) {
-    if (typeof cfg[field] === 'string' && cfg[field].trim()) {
-      try { tx[field] = JSON.parse(cfg[field]); } catch { /* keep as string */ }
-    }
-  }
-
-  return tx;
+  return buildValidatedTransaction(node.type as string, getConfig(node), fallbackWallet.address, innerBatch) as Record<string, any>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -380,11 +437,8 @@ function resolveSigningWallet(
 
   if (cfgAccount) {
     const match = allWallets.find(w => w.address === cfgAccount);
-    if (match) {
-      walletInfo = match;
-    }
-    // If no match found, warn but fall back to active wallet.
-    // The error will surface as tefBAD_AUTH with a clear message.
+    if (!match) throw new Error(`No local signer is available for transaction account ${cfgAccount}. Import that account before running.`);
+    walletInfo = match;
   }
 
   if (!walletInfo.seed) {
@@ -401,10 +455,31 @@ function resolveSigningWallet(
 // Network gating pre-flight
 // ─────────────────────────────────────────────────────────────────────────────
 
-function preflightNetworkGating(nodes: Node[], network: NetworkType): void {
-  if (network === 'devnet') return;
+async function preflightNetworkGating(nodes: Node[], network: NetworkType, client: XRPL.Client): Promise<void> {
+  const gatedNodes = nodes.filter(node => getNodeDef(node.type as string)?.networkGating === 'devnet-only');
+  if (network === 'devnet') {
+    if (gatedNodes.length === 0) return;
+    const required = new Set<string>();
+    for (const node of gatedNodes) {
+      const type = String(node.type);
+      if (type === 'BatchContainer') required.add('Batch');
+      else if (type.startsWith('Vault')) required.add('SingleAssetVault');
+      else if (type.startsWith('Loan')) required.add('LendingProtocol');
+    }
+    let result: any;
+    try {
+      result = (await client.request({ command: 'feature' } as any)).result;
+    } catch (error) {
+      throw new Error(`Could not verify required Devnet amendments: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const features = Object.values(result?.features || result || {}) as Array<any>;
+    const enabledNames = new Set(features.filter(feature => feature && typeof feature === 'object' && feature.enabled !== false).map(feature => feature.name));
+    const missing = [...required].filter(name => !enabledNames.has(name));
+    if (missing.length) throw new Error(`Connected Devnet server does not report required amendment(s): ${missing.join(', ')}.`);
+    return;
+  }
   const violations: string[] = [];
-  for (const node of nodes) {
+  for (const node of gatedNodes) {
     const def = getNodeDef(node.type as string);
     if (def?.networkGating === 'devnet-only') violations.push(`"${def.label}"`);
   }
@@ -492,10 +567,10 @@ async function executeBatch(
     status: 'running',
   });
 
-  if (innerNodes.length === 0) {
+  if (innerNodes.length < 2) {
     throw new Error(
-      'BatchContainer has no inner transaction nodes. ' +
-      'Drop tx nodes inside the batch container group on the canvas.',
+      'BatchContainer requires at least 2 inner transaction nodes. ' +
+      'Drop 2–8 transaction nodes inside the group.',
     );
   }
   if (innerNodes.length > 8) {
@@ -507,6 +582,14 @@ async function executeBatch(
   }));
 
   const { walletInfo, xrplWallet } = resolveSigningWallet(undefined, allWallets, activeWallet);
+  const involvedAccounts = new Set(rawTransactions.map(item => String(item.RawTransaction.Account)));
+  involvedAccounts.delete(walletInfo.address);
+  const batchWallets = new Map<string, XRPL.Wallet>();
+  for (const account of involvedAccounts) {
+    const info = allWallets.find(item => item.address === account);
+    if (!info?.seed) throw new Error(`Batch account ${account} requires an imported local signing wallet.`);
+    batchWallets.set(account, XRPL.Wallet.fromSeed(info.seed));
+  }
 
   const batchTx: any = {
     TransactionType: 'Batch',
@@ -527,7 +610,9 @@ async function executeBatch(
       message: `Prelim: ${prelim}${msg ? ` — ${msg}` : ''}`,
       status: /^tes/.test(prelim) ? 'success' : isTerminalFailure(prelim) ? 'failed' : 'running',
     });
-  }, signal);
+  }, signal, cbs.network === 'mainnet' && cbs.reviewTransaction ? {
+    callback: cbs.reviewTransaction, signerAddresses: [walletInfo.address, ...batchWallets.keys()], nodeId: batchNode.id, nodeLabel: label,
+  } : undefined, undefined, batchWallets);
 
   const txResult = result?.meta?.TransactionResult || 'unknown';
 
@@ -581,23 +666,30 @@ async function executeNode(
     if (type === 'AccountEventTrigger') {
       const watchAddr = cfg.WatchAddress;
       if (!watchAddr) throw new Error('WatchAddress is required for AccountEventTrigger');
+      if (!XRPL.isValidClassicAddress(String(watchAddr))) throw new Error('WatchAddress must be a valid classic XRPL address.');
       cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `Subscribing to ${watchAddr}...`, status: 'running' });
       const output = await new Promise<any>((resolve, reject) => {
         let cleanup: (() => void) | undefined;
+        let settled = false;
+        const timeoutMs = Math.min(Math.max(Number(cfg.TimeoutSeconds || 60), 1), 3600) * 1000;
         const timeout = setTimeout(() => {
+          settled = true;
           if (cleanup) cleanup();
-          reject(new Error('AccountEventTrigger: no transaction received within 60s'));
-        }, 60_000);
+          reject(new Error(`AccountEventTrigger: no matching transaction received within ${timeoutMs / 1000}s`));
+        }, timeoutMs);
         signal?.addEventListener('abort', () => {
+          settled = true;
           clearTimeout(timeout);
           if (cleanup) cleanup();
           reject(new DOMException('Workflow stopped by user.', 'AbortError'));
         }, { once: true });
         subscribeAccountEvent(client, watchAddr, (tx) => {
+          if (cfg.EventType && tx.TransactionType !== cfg.EventType) return;
+          settled = true;
           clearTimeout(timeout);
           if (cleanup) cleanup();
           resolve(tx);
-        }).then(fn => { cleanup = fn; }).catch(reject);
+        }).then(fn => { cleanup = fn; if (settled) fn(); }).catch(reject);
       });
       cbs.setNodeStatus(node.id, 'success');
       cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `Received tx: ${output.hash || ''}`, status: 'success' });
@@ -646,10 +738,38 @@ async function executeNode(
       return { output: prevOutput };
     }
 
-    if (type === 'Loop') {
+    if (type === 'LoopContainer') {
+      const children = allNodes
+        .filter(child => child.parentId === node.id)
+        .sort((a, b) => a.position.x - b.position.x || a.position.y - b.position.y);
+      if (children.length === 0) throw new Error('Loop Container requires at least one contained node.');
+      const mode = String(cfg.LoopMode || 'count');
+      const requested = Number(cfg.Iterations || 1);
+      const maximum = Math.min(Math.max(requested, 1), 100);
+      if (!Number.isInteger(requested) || requested < 1 || requested > 100) throw new Error('Loop iterations must be an integer from 1 to 100.');
+      let output = prevOutput;
+      let iteration = 0;
+      do {
+        checkAbort(signal);
+        for (const child of children) {
+          const result = await executeNode(child, output, allNodes, client, activeWallet, allWallets, cbs, innerNodeIds, nodeMap, successors, signal);
+          output = result.output;
+        }
+        iteration += 1;
+        if (mode === 'until-condition' && cfg.Condition && evalCondition(String(cfg.Condition), output)) break;
+        if (iteration < maximum && Number(cfg.DelayBetween) > 0) {
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(resolve, Number(cfg.DelayBetween));
+            signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Workflow stopped by user.', 'AbortError')); }, { once: true });
+          });
+        }
+      } while (iteration < maximum);
+      if (mode === 'until-condition' && (!cfg.Condition || !evalCondition(String(cfg.Condition), output))) {
+        throw new Error(`Loop stop condition was not met after ${maximum} iterations.`);
+      }
       cbs.setNodeStatus(node.id, 'success');
-      cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: 'Loop started', status: 'success' });
-      return { output: prevOutput };
+      cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: `Completed ${iteration} iteration${iteration === 1 ? '' : 's'}`, status: 'success' });
+      return { output };
     }
 
     if (type === 'LogOutput') {
@@ -682,13 +802,25 @@ async function executeNode(
     }
 
     // ── Transaction node ──────────────────────────────────────────────────
-    // Resolve the signing wallet: match cfg.Account to an imported wallet
-    const { walletInfo, xrplWallet } = resolveSigningWallet(cfg.Account, allWallets, activeWallet);
+    const signingConfig = (node.data?.signing as { mode?: 'single' | 'multi'; signerWalletIds?: string[]; counterpartyWalletId?: string } | undefined);
+    const isMultisign = signingConfig?.mode === 'multi';
+    const { walletInfo, xrplWallet } = resolveSigningWallet(isMultisign ? undefined : cfg.Account, allWallets, activeWallet);
+    const selectedWallets = isMultisign
+      ? (signingConfig?.signerWalletIds || []).map(id => allWallets.find(item => item.id === id)).filter((item): item is WalletInfo => Boolean(item))
+      : [];
+    if (isMultisign && selectedWallets.some(item => !item.seed)) throw new Error('Every selected multisigner must have a local seed.');
+    const signingWallets = isMultisign
+      ? selectedWallets.map(item => XRPL.Wallet.fromSeed(item.seed!))
+      : xrplWallet;
+    const counterpartyInfo = signingConfig?.counterpartyWalletId ? allWallets.find(item => item.id === signingConfig.counterpartyWalletId) : undefined;
+    const counterpartyWallet = counterpartyInfo?.seed ? XRPL.Wallet.fromSeed(counterpartyInfo.seed) : undefined;
 
     const tx = buildTx(node, walletInfo, false);
 
     // Log which wallet is signing (helpful for multi-wallet debugging)
-    const signerNote = walletInfo.address !== activeWallet.address
+    const signerNote = isMultisign
+      ? ` (${selectedWallets.length} local multisigners)`
+      : walletInfo.address !== activeWallet.address
       ? ` (signing as ${walletInfo.name}: ${walletInfo.address.slice(0, 8)}…)`
       : '';
 
@@ -698,7 +830,7 @@ async function executeNode(
       status: 'running',
     });
 
-    const result = await submitWithFastFail(client, tx, xrplWallet, (prelim, msg) => {
+    const result = await submitWithFastFail(client, tx, signingWallets, (prelim, msg) => {
       // Show the preliminary engine result immediately in the log
       const prelimStatus = /^tes/.test(prelim) ? 'success'
         : isTerminalFailure(prelim)             ? 'failed'
@@ -709,7 +841,9 @@ async function executeNode(
         message: `Prelim: ${prelim}${msg ? ` — ${msg}` : ''}`,
         status: prelimStatus,
       });
-    }, signal);
+    }, signal, cbs.network === 'mainnet' && cbs.reviewTransaction ? {
+      callback: cbs.reviewTransaction, signerAddresses: isMultisign ? selectedWallets.map(item => item.address) : [walletInfo.address], nodeId: node.id, nodeLabel: label,
+    } : undefined, counterpartyWallet);
 
     const hash     = result?.hash || '';
     const txResult = result?.meta?.TransactionResult || 'unknown';
@@ -754,7 +888,11 @@ export async function runWorkflow(
   signal?: AbortSignal,
 ): Promise<void> {
   checkAbort(signal);
-  preflightNetworkGating(nodes, cbs.network);
+  const validationErrors = validateWorkflowGraph(nodes, edges);
+  if (validationErrors.length) {
+    throw new Error(`Workflow validation failed: ${validationErrors.map(error => `${error.nodeLabel} — ${error.fieldLabel}`).join('; ')}`);
+  }
+  await preflightNetworkGating(nodes, cbs.network, client);
 
   // Ensure allWallets contains at least the active wallet
   const walletList = allWallets.length > 0
@@ -777,13 +915,12 @@ export async function runWorkflow(
     nodes.filter(n => n.parentId !== undefined).map(n => n.id),
   );
 
-  const inFlight   = new Map<string, Promise<any>>();
-  // SyncJoin: count how many predecessors have arrived at each join node
-  const sjArrivals = new Map<string, number>();
-  // SyncJoin: deferred resolvers for early-arriving predecessors
-  const sjWaiters  = new Map<string, Array<{ resolve: (v: any) => void; reject: (e: any) => void }>>();
+  type RuntimeToken = { tokenId: string; branchId: string; splitId?: string };
+  const inFlight = new Map<string, Promise<any>>();
+  const sjArrivals = new Map<string, Set<string>>();
+  const sjWaiters = new Map<string, Array<{ resolve: (v: any) => void; reject: (e: any) => void }>>();
 
-  async function runNode(nodeId: string, input: any): Promise<any> {
+  async function runNode(nodeId: string, input: any, token: RuntimeToken): Promise<any> {
     checkAbort(signal);
     if (innerBatchIds.has(nodeId)) return input;
 
@@ -792,16 +929,18 @@ export async function runWorkflow(
 
     // ── SyncJoin: arrival-counting to avoid circular inFlight dependency ──
     if ((node.type as string) === 'SyncJoin') {
-      const predCount = (predecessors.get(nodeId) || []).length;
-      const arrivals  = (sjArrivals.get(nodeId) || 0) + 1;
-      sjArrivals.set(nodeId, arrivals);
+      const joinKey = `${token.splitId || token.tokenId}:${nodeId}`;
+      const expected = token.splitId ? (successors.get(token.splitId) || []).length : 1;
+      const arrivals = sjArrivals.get(joinKey) || new Set<string>();
+      arrivals.add(token.branchId);
+      sjArrivals.set(joinKey, arrivals);
 
-      if (arrivals < predCount) {
+      if (arrivals.size < expected) {
         // Not the last predecessor to arrive — park and wait
         return new Promise<any>((resolve, reject) => {
-          const list = sjWaiters.get(nodeId) || [];
+          const list = sjWaiters.get(joinKey) || [];
           list.push({ resolve, reject });
-          sjWaiters.set(nodeId, list);
+          sjWaiters.set(joinKey, list);
           signal?.addEventListener('abort', () => {
             reject(new DOMException('Workflow stopped by user.', 'AbortError'));
           }, { once: true });
@@ -815,18 +954,20 @@ export async function runWorkflow(
           node, input, nodes, client, activeWalletInfo, walletList, cbs,
           innerBatchIds, nodeMap, successors, signal,
         );
-        const result = await Promise.all(succs.map(sid => runNode(sid, output)));
+        const mergedToken = { tokenId: crypto.randomUUID(), branchId: 'merged' };
+        const result = await Promise.all(succs.map(sid => runNode(sid, output, mergedToken)));
         // Unblock all parked callers
-        for (const w of (sjWaiters.get(nodeId) || [])) w.resolve(result);
+        for (const w of (sjWaiters.get(joinKey) || [])) w.resolve(result);
         return result;
       } catch (e) {
-        for (const w of (sjWaiters.get(nodeId) || [])) w.reject(e);
+        for (const w of (sjWaiters.get(joinKey) || [])) w.reject(e);
         throw e;
       }
     }
 
     // ── Normal cached execution for all other nodes ──
-    if (inFlight.has(nodeId)) return inFlight.get(nodeId);
+    const flightKey = `${token.tokenId}:${nodeId}`;
+    if (inFlight.has(flightKey)) return inFlight.get(flightKey);
 
     const promise = executeNode(
       node, input, nodes, client, activeWalletInfo, walletList, cbs,
@@ -838,55 +979,33 @@ export async function runWorkflow(
         const trueEdges  = edges.filter(e => e.source === nodeId && (e.sourceHandle === 'true' || !e.sourceHandle));
         const falseEdges = edges.filter(e => e.source === nodeId && e.sourceHandle === 'false');
         const nextEdges  = conditionResult ? trueEdges : falseEdges;
-        return Promise.all(nextEdges.map(e => runNode(e.target, output)));
+        return Promise.all(nextEdges.map(e => runNode(e.target, output, token)));
       }
 
       if ((node.type as string) === 'ParallelSplit') {
-        return Promise.all(succs.map(sid => runNode(sid, output)));
-      }
-
-      if ((node.type as string) === 'Loop') {
-        const loopMode = getConfig(node).LoopMode || 'count';
-        const maxIter  = Number(getConfig(node).Iterations) || 1;
-        const delay    = Number(getConfig(node).DelayBetween) || 0;
-        const condExpr = getConfig(node).Condition || '';
-
-        const run = async () => {
-          let iter = 0;
-          const MAX_SAFETY = 100;
-          let loopOutput = output;
-          while (true) {
-            if (loopMode === 'count' && iter >= maxIter) break;
-            if (loopMode === 'until-condition' && condExpr && evalCondition(condExpr, loopOutput)) break;
-            if (iter >= MAX_SAFETY) break;
-            if (iter > 0 && delay > 0) await new Promise(r => setTimeout(r, delay));
-            for (const sid of succs) inFlight.delete(sid);
-            const results = await Promise.all(succs.map(sid => runNode(sid, loopOutput)));
-            loopOutput = results[0] ?? loopOutput;
-            iter++;
-          }
-        };
-        return run();
+        return Promise.all(succs.map((sid, index) => runNode(sid, output, {
+          tokenId: crypto.randomUUID(), branchId: `${nodeId}:${index}`, splitId: nodeId,
+        })));
       }
 
       if ((node.type as string) === 'BatchContainer') {
         const afterBatch = succs.filter(sid => !innerBatchIds.has(sid));
         return afterBatch.reduce(
-          (chain, sid) => chain.then(() => runNode(sid, output)),
+          (chain, sid) => chain.then(() => runNode(sid, output, token)),
           Promise.resolve() as Promise<any>,
         );
       }
 
       // Default: sequential
       return succs.reduce(
-        (chain, sid) => chain.then(() => runNode(sid, output)),
+        (chain, sid) => chain.then(() => runNode(sid, output, token)),
         Promise.resolve() as Promise<any>,
       );
     });
 
-    inFlight.set(nodeId, promise);
+    inFlight.set(flightKey, promise);
     return promise;
   }
 
-  await Promise.all(triggerNodes.map(t => runNode(t.id, {})));
+  await Promise.all(triggerNodes.map(t => runNode(t.id, {}, { tokenId: crypto.randomUUID(), branchId: 'root' })));
 }

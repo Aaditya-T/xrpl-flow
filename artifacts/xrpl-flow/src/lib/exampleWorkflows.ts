@@ -1,4 +1,10 @@
 import { Node, Edge } from '@xyflow/react';
+import {
+  LEGACY_WORKFLOW_STORAGE_KEY,
+  WORKFLOW_STORAGE_KEY,
+  WORKFLOW_VERSION,
+  type WorkflowDocumentV2,
+} from './workflowTypes';
 
 export interface ExampleWorkflow {
   name: string;
@@ -171,7 +177,7 @@ export const EXAMPLE_WORKFLOWS: ExampleWorkflow[] = [
         data: { label: 'Manual Trigger', config: {} },
       },
       {
-        id: 'n2', type: 'Loop', position: px(360, 200),
+        id: 'n2', type: 'LoopContainer', position: px(360, 140), style: { width: 480, height: 260 },
         data: {
           label: 'Repeat 3×',
           config: {
@@ -182,7 +188,7 @@ export const EXAMPLE_WORKFLOWS: ExampleWorkflow[] = [
         },
       },
       {
-        id: 'n3', type: 'Payment', position: px(640, 200),
+        id: 'n3', type: 'Payment', position: px(100, 105), parentId: 'n2', extent: 'parent',
         data: {
           label: 'Payment (looped)',
           config: {
@@ -199,8 +205,7 @@ export const EXAMPLE_WORKFLOWS: ExampleWorkflow[] = [
     ],
     edges: [
       { id: 'e1-2', source: 'n1', target: 'n2' },
-      { id: 'e2-3', source: 'n2', target: 'n3' },
-      { id: 'e3-4', source: 'n3', target: 'n4' },
+      { id: 'e2-4', source: 'n2', target: 'n4' },
     ],
   },
 
@@ -281,7 +286,7 @@ export const EXAMPLE_WORKFLOWS: ExampleWorkflow[] = [
         data: {
           label: 'Did it succeed?',
           config: {
-            Expression: 'output?.result?.meta?.TransactionResult === "tesSUCCESS"',
+            Expression: 'output.meta.TransactionResult === "tesSUCCESS"',
             TrueLabel: 'success',
             FalseLabel: 'failed',
           },
@@ -498,18 +503,20 @@ export const EXAMPLE_WORKFLOWS: ExampleWorkflow[] = [
   },
 ];
 
-const STORAGE_KEY = 'xrplFlow_workflows';
-
-export function loadWorkflowsFromStorage(): Record<string, { name: string; nodes: Node[]; edges: Edge[] }> {
+export function loadWorkflowsFromStorage(): Record<string, WorkflowDocumentV2> {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
+    // v2 is intentionally a clean break: old documents are neither read nor migrated.
+    localStorage.removeItem(LEGACY_WORKFLOW_STORAGE_KEY);
+    const raw = localStorage.getItem(WORKFLOW_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, WorkflowDocumentV2>;
+    return Object.fromEntries(Object.entries(parsed).filter(([, document]) => document?.version === WORKFLOW_VERSION));
   } catch { return {}; }
 }
 
-export function saveWorkflowsToStorage(workflows: Record<string, { name: string; nodes: Node[]; edges: Edge[] }>) {
+export function saveWorkflowsToStorage(workflows: Record<string, WorkflowDocumentV2>) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(workflows));
+    localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(workflows));
   } catch { /* ignore */ }
 }
 
@@ -518,13 +525,22 @@ export function saveWorkflowsToStorage(workflows: Record<string, { name: string;
  * This means new examples added to EXAMPLE_WORKFLOWS appear for existing users,
  * and any workflows the user has saved/renamed are preserved.
  */
-export function initializeExamplesIfNeeded(): Record<string, { name: string; nodes: Node[]; edges: Edge[] }> {
+export function initializeExamplesIfNeeded(): Record<string, WorkflowDocumentV2> {
   const existing = loadWorkflowsFromStorage();
-  const result: Record<string, { name: string; nodes: Node[]; edges: Edge[] }> = { ...existing };
+  const result: Record<string, WorkflowDocumentV2> = { ...existing };
   let changed = false;
   for (const wf of EXAMPLE_WORKFLOWS) {
     if (!result[wf.name]) {
-      result[wf.name] = { name: wf.name, nodes: wf.nodes, edges: wf.edges };
+      const now = Date.now();
+      result[wf.name] = {
+        version: WORKFLOW_VERSION,
+        id: `example-${wf.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+        name: wf.name,
+        createdAt: now,
+        updatedAt: now,
+        nodes: wf.nodes as any,
+        edges: wf.edges,
+      };
       changed = true;
     }
   }

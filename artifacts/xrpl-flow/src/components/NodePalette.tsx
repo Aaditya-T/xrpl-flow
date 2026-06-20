@@ -7,10 +7,12 @@ import { cn } from '@/lib/utils';
 interface PaletteItemProps {
   def: NodeTypeDef;
   isDevnetWarning: boolean;
+  onInsert: (def: NodeTypeDef) => void;
 }
 
-function PaletteItem({ def, isDevnetWarning }: PaletteItemProps) {
+function PaletteItem({ def, isDevnetWarning, onInsert }: PaletteItemProps) {
   const onDragStart = (e: React.DragEvent) => {
+    if (isDevnetWarning) { e.preventDefault(); return; }
     e.dataTransfer.setData('application/reactflow/type', def.id);
     e.dataTransfer.setData('application/reactflow/label', def.label);
     e.dataTransfer.effectAllowed = 'move';
@@ -18,8 +20,12 @@ function PaletteItem({ def, isDevnetWarning }: PaletteItemProps) {
 
   return (
     <div
-      draggable
+      draggable={!isDevnetWarning}
       onDragStart={onDragStart}
+      role="button"
+      tabIndex={isDevnetWarning ? -1 : 0}
+      aria-disabled={isDevnetWarning}
+      onKeyDown={event => { if (!isDevnetWarning && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onInsert(def); } }}
       data-testid={`palette-item-${def.id}`}
       className={cn(
         'flex items-start gap-2 px-2.5 py-2 rounded cursor-grab',
@@ -50,7 +56,20 @@ function PaletteItem({ def, isDevnetWarning }: PaletteItemProps) {
 export function NodePalette() {
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['Triggers', 'Payments & Channels', 'Control Flow']));
-  const { network } = useWorkflowStore();
+  const { network, nodes, setNodes, pushToUndoStack } = useWorkflowStore();
+
+  const insertNode = (def: NodeTypeDef) => {
+    if (def.networkGating === 'devnet-only' && network !== 'devnet') return;
+    pushToUndoStack();
+    const index = nodes.length;
+    setNodes([...nodes, {
+      id: `node_${crypto.randomUUID()}`,
+      type: def.id,
+      position: { x: 120 + (index % 4) * 220, y: 100 + Math.floor(index / 4) * 150 },
+      data: { label: def.label, config: {} },
+      ...(def.id === 'BatchContainer' || def.id === 'LoopContainer' ? { style: { width: 480, height: 260 } } : {}),
+    }]);
+  };
 
   const filtered = search
     ? NODE_REGISTRY.filter(n =>
@@ -105,6 +124,7 @@ export function NodePalette() {
                 key={def.id}
                 def={def}
                 isDevnetWarning={def.networkGating === 'devnet-only' && network !== 'devnet'}
+                onInsert={insertNode}
               />
             ))}
           </div>
@@ -144,6 +164,7 @@ export function NodePalette() {
                         key={def.id}
                         def={def}
                         isDevnetWarning={def.networkGating === 'devnet-only' && network !== 'devnet'}
+                        onInsert={insertNode}
                       />
                     ))}
                   </div>
@@ -156,7 +177,7 @@ export function NodePalette() {
 
       {/* Footer tip */}
       <div className="px-3 py-2 border-t border-[#1e2130] text-[9px] text-slate-600 font-mono">
-        drag nodes onto canvas
+        drag nodes or focus one and press Enter
       </div>
     </div>
   );

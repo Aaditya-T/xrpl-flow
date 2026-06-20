@@ -46,6 +46,7 @@ function XRPLNodeInner({ id, type, data, selected }: NodeProps) {
   const isBatch = type === 'BatchContainer';
   const label = nodeData.label || def?.label || type;
   const isCondition = type === 'ConditionBranch';
+  const isTrigger = type === 'ManualTrigger' || type === 'AccountEventTrigger';
   const isParallelSplit = type === 'ParallelSplit';
 
   const statusRing = {
@@ -60,7 +61,7 @@ function XRPLNodeInner({ id, type, data, selected }: NodeProps) {
   return (
     <div
       className={cn(
-        'relative flex flex-col min-w-[160px] max-w-[220px] rounded-md overflow-hidden',
+        'connection-node relative flex flex-col min-w-[160px] max-w-[220px] rounded-md overflow-visible',
         'bg-[#151820] border border-[#1e2130] text-xs text-slate-200 select-none',
         'shadow-lg transition-all duration-150',
         selected && 'border-blue-500/60',
@@ -127,36 +128,36 @@ function XRPLNodeInner({ id, type, data, selected }: NodeProps) {
 
       {/* Handles */}
       {/* Target (input) — left */}
-      {type !== 'ManualTrigger' && (
-        <Handle
-          type="target"
-          position={Position.Left}
-          style={{ background: color, borderColor: '#0a0b0d', left: -5 }}
-        />
-      )}
+      {!isTrigger && <>
+        <Handle className="connection-handle" type="target" position={Position.Left} aria-label={`Connect into ${label}`} style={{ background: color, borderColor: '#f8fafc', left: -5 }} />
+      </>}
 
       {/* Source (output) — right */}
       {isCondition ? (
         <>
           <Handle
+            className="connection-handle"
             type="source"
             position={Position.Right}
             id="true"
-            style={{ background: '#10b981', borderColor: '#0a0b0d', top: '35%', right: -5 }}
+            aria-label={`Connect true branch from ${label}`}
+            style={{ background: '#10b981', borderColor: '#f8fafc', top: '35%', right: -5 }}
           />
+          <span className="connection-port-label connection-port-label-true">true</span>
           <Handle
+            className="connection-handle"
             type="source"
             position={Position.Right}
             id="false"
-            style={{ background: '#ef4444', borderColor: '#0a0b0d', top: '65%', right: -5 }}
+            aria-label={`Connect false branch from ${label}`}
+            style={{ background: '#ef4444', borderColor: '#f8fafc', top: '65%', right: -5 }}
           />
+          <span className="connection-port-label connection-port-label-false">false</span>
         </>
       ) : (
-        <Handle
-          type="source"
-          position={Position.Right}
-          style={{ background: color, borderColor: '#0a0b0d', right: -5 }}
-        />
+        <>
+          <Handle className="connection-handle" type="source" position={Position.Right} aria-label={`Connect from ${label}`} style={{ background: color, borderColor: '#f8fafc', right: -5 }} />
+        </>
       )}
     </div>
   );

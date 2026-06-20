@@ -10,11 +10,13 @@ import {
   Connection,
   NodeTypes,
   Node,
+  SelectionMode,
 } from '@xyflow/react';
+import { MousePointer2, Trash2 } from 'lucide-react';
 import '@xyflow/react/dist/style.css';
 
 import { useWorkflowStore } from '@/store/workflowStore';
-import { getNodeDef } from '@/lib/nodeRegistry';
+import { getNodeDef, NODE_REGISTRY } from '@/lib/nodeRegistry';
 import { initializeExamplesIfNeeded } from '@/lib/exampleWorkflows';
 import { NodePalette } from './NodePalette';
 import { ConfigPanel } from './ConfigPanel';
@@ -23,83 +25,21 @@ import { ExecutionLog } from './ExecutionLog';
 import { Header } from './Header';
 import { XRPLNode } from './nodes/XRPLNode';
 import { BatchContainerNode } from './nodes/BatchContainerNode';
+import { LoopContainerNode } from './nodes/LoopContainerNode';
+import { TransactionReviewDialog } from './TransactionReviewDialog';
 
-const NODE_TYPES: NodeTypes = {
-  ManualTrigger: XRPLNode,
-  AccountEventTrigger: XRPLNode,
-  AccountSet: XRPLNode,
-  AccountDelete: XRPLNode,
-  SetRegularKey: XRPLNode,
-  SignerListSet: XRPLNode,
-  DepositPreauth: XRPLNode,
-  TicketCreate: XRPLNode,
-  Payment: XRPLNode,
-  EscrowCreate: XRPLNode,
-  EscrowFinish: XRPLNode,
-  EscrowCancel: XRPLNode,
-  PaymentChannelCreate: XRPLNode,
-  PaymentChannelFund: XRPLNode,
-  PaymentChannelClaim: XRPLNode,
-  TrustSet: XRPLNode,
-  OfferCreate: XRPLNode,
-  OfferCancel: XRPLNode,
-  Clawback: XRPLNode,
-  AMMCreate: XRPLNode,
-  AMMDeposit: XRPLNode,
-  AMMWithdraw: XRPLNode,
-  AMMVote: XRPLNode,
-  AMMBid: XRPLNode,
-  AMMDelete: XRPLNode,
-  AMMClawback: XRPLNode,
-  MPTokenIssuanceCreate: XRPLNode,
-  MPTokenIssuanceDestroy: XRPLNode,
-  MPTokenIssuanceSet: XRPLNode,
-  MPTokenAuthorize: XRPLNode,
-  CredentialCreate: XRPLNode,
-  CredentialAccept: XRPLNode,
-  CredentialDelete: XRPLNode,
-  PermissionedDomainSet: XRPLNode,
-  PermissionedDomainDelete: XRPLNode,
-  DIDSet: XRPLNode,
-  DIDDelete: XRPLNode,
-  OracleSet: XRPLNode,
-  OracleDelete: XRPLNode,
-  NFTokenMint: XRPLNode,
-  NFTokenBurn: XRPLNode,
-  NFTokenCreateOffer: XRPLNode,
-  NFTokenCancelOffer: XRPLNode,
-  NFTokenAcceptOffer: XRPLNode,
-  NFTokenModify: XRPLNode,
-  CheckCreate: XRPLNode,
-  CheckCash: XRPLNode,
-  CheckCancel: XRPLNode,
-  VaultCreate: XRPLNode,
-  VaultUpdate: XRPLNode,
-  VaultDeposit: XRPLNode,
-  VaultWithdraw: XRPLNode,
-  VaultDelete: XRPLNode,
-  VaultClawback: XRPLNode,
-  LoanBrokerSet: XRPLNode,
-  LoanBrokerDelete: XRPLNode,
-  LoanBrokerDeposit: XRPLNode,
-  LoanBrokerWithdraw: XRPLNode,
-  LoanBrokerClawback: XRPLNode,
-  LoanSet: XRPLNode,
-  LoanPay: XRPLNode,
-  LoanManage: XRPLNode,
-  LoanDelete: XRPLNode,
-  BatchContainer: BatchContainerNode,
-  ConditionBranch: XRPLNode,
-  ParallelSplit: XRPLNode,
-  SyncJoin: XRPLNode,
-  Loop: XRPLNode,
-  Delay: XRPLNode,
-  LogOutput: XRPLNode,
-};
+const NODE_TYPES: NodeTypes = Object.fromEntries(
+  NODE_REGISTRY.map(definition => [
+    definition.id,
+    definition.id === 'BatchContainer' ? BatchContainerNode : definition.id === 'LoopContainer' ? LoopContainerNode : XRPLNode,
+  ]),
+);
 
 /** Default size for a newly-dropped BatchContainer group */
 const BATCH_DEFAULT_W = 480;
 const BATCH_DEFAULT_H = 260;
+const LOOP_DEFAULT_W = 480;
+const LOOP_DEFAULT_H = 260;
 
 let nodeIdCounter = Date.now();
 const newNodeId = () => `node_${nodeIdCounter++}`;
@@ -110,9 +50,9 @@ const newNodeId = () => `node_${nodeIdCounter++}`;
  */
 function findParentBatch(nodes: Node[], cx: number, cy: number): Node | undefined {
   return nodes.find((n) => {
-    if (n.type !== 'BatchContainer') return false;
-    const w = (n.style?.width as number) || BATCH_DEFAULT_W;
-    const h = (n.style?.height as number) || BATCH_DEFAULT_H;
+    if (n.type !== 'BatchContainer' && n.type !== 'LoopContainer') return false;
+    const w = (n.style?.width as number) || (n.type === 'LoopContainer' ? LOOP_DEFAULT_W : BATCH_DEFAULT_W);
+    const h = (n.style?.height as number) || (n.type === 'LoopContainer' ? LOOP_DEFAULT_H : BATCH_DEFAULT_H);
     return (
       cx >= n.position.x &&
       cx <= n.position.x + w &&
@@ -124,17 +64,19 @@ function findParentBatch(nodes: Node[], cx: number, cy: number): Node | undefine
 
 function Canvas() {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, deleteElements } = useReactFlow();
   const [showLog, setShowLog] = useState(false);
   const [rightTab, setRightTab] = useState<'config' | 'wallets'>('wallets');
+  const [isConnecting, setIsConnecting] = useState(false);
 
   const {
     nodes, edges,
     onNodesChange, onEdgesChange, onConnect,
     setSelectedNodeId, selectedNodeId,
     loadWorkflow, loadInitialWorkflows, savedWorkflows,
-    pushToUndoStack, undo, saveWorkflow,
+    pushToUndoStack, undo, redo, saveWorkflow, dirty,
   } = useWorkflowStore();
+  const selectedNodes = nodes.filter(node => node.selected);
 
   // Initialize example workflows on first load
   useEffect(() => {
@@ -149,6 +91,14 @@ function Canvas() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Persist v2 documents after a short idle period. Config fields already update
+  // node data live, so switching selection cannot discard edits.
+  useEffect(() => {
+    if (!dirty) return;
+    const timer = window.setTimeout(saveWorkflow, 700);
+    return () => window.clearTimeout(timer);
+  }, [dirty, nodes, edges, saveWorkflow]);
+
   // Global keyboard shortcuts: Cmd/Ctrl+S → save, Cmd/Ctrl+Z → undo
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -158,14 +108,18 @@ function Canvas() {
         e.preventDefault();
         saveWorkflow();
       }
-      if (e.key === 'z') {
+      if (e.key.toLowerCase() === 'z') {
         e.preventDefault();
-        undo();
+        if (e.shiftKey) redo(); else undo();
+      }
+      if (e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        redo();
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [saveWorkflow, undo]);
+  }, [saveWorkflow, undo, redo]);
 
   const handleNodeClick = useCallback((_: React.MouseEvent, node: any) => {
     setSelectedNodeId(node.id);
@@ -198,7 +152,7 @@ function Canvas() {
     const def = getNodeDef(nodeType);
 
     // Detect if we're dropping inside a BatchContainer's bounds
-    const parentBatch = nodeType !== 'BatchContainer'
+    const parentBatch = nodeType !== 'BatchContainer' && nodeType !== 'LoopContainer'
       ? findParentBatch(nodes, position.x, position.y)
       : undefined;
 
@@ -217,6 +171,9 @@ function Canvas() {
       },
       ...(nodeType === 'BatchContainer' && {
         style: { width: BATCH_DEFAULT_W, height: BATCH_DEFAULT_H },
+      }),
+      ...(nodeType === 'LoopContainer' && {
+        style: { width: LOOP_DEFAULT_W, height: LOOP_DEFAULT_H },
       }),
       ...(parentBatch && {
         parentId: parentBatch.id,
@@ -240,7 +197,7 @@ function Canvas() {
         {/* Center: Canvas */}
         <div
           ref={reactFlowWrapper}
-          className="flex-1 relative"
+          className={`flex-1 relative ${isConnecting ? 'is-connecting' : ''}`}
           onDragOver={handleDragOver}
           onDrop={handleDrop}
           data-testid="canvas"
@@ -251,6 +208,8 @@ function Canvas() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={handleConnect}
+            onConnectStart={() => setIsConnecting(true)}
+            onConnectEnd={() => setIsConnecting(false)}
             onNodeClick={handleNodeClick}
             onPaneClick={handlePaneClick}
             nodeTypes={NODE_TYPES}
@@ -258,6 +217,10 @@ function Canvas() {
             fitViewOptions={{ padding: 0.15 }}
             defaultEdgeOptions={{ style: { stroke: 'hsl(210 100% 50% / 0.5)', strokeWidth: 1.5 } }}
             connectionLineStyle={{ stroke: '#0085ff', strokeWidth: 1.5 }}
+            selectionOnDrag
+            selectionMode={SelectionMode.Partial}
+            panOnDrag={[1, 2]}
+            panActivationKeyCode="Space"
             deleteKeyCode={['Delete', 'Backspace']}
             snapToGrid={true}
             snapGrid={[10, 10]}
@@ -279,6 +242,18 @@ function Canvas() {
               maskColor="rgba(10,11,13,0.7)"
             />
           </ReactFlow>
+
+          {selectedNodes.length > 1 && (
+            <div className="absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-[#30374a] bg-[#111520]/95 px-2.5 py-1.5 shadow-xl backdrop-blur" role="toolbar" aria-label="Multiple node selection">
+              <span className="flex items-center gap-1.5 text-[10px] text-slate-300"><MousePointer2 size={11} className="text-blue-400" />{selectedNodes.length} nodes selected</span>
+              <div className="h-4 w-px bg-[#30374a]" />
+              <button type="button" onClick={() => deleteElements({ nodes: selectedNodes.map(node => ({ id: node.id })) })} className="flex items-center gap-1 rounded px-2 py-1 text-[10px] text-red-300 transition-colors hover:bg-red-950/60 hover:text-red-200" title="Delete selected nodes (Delete)"><Trash2 size={11} />Delete</button>
+            </div>
+          )}
+
+          <div className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-md border border-[#252b3b]/80 bg-[#0d1018]/85 px-2.5 py-1 text-[9px] text-slate-500 backdrop-blur">
+            Drag empty canvas to select · Space-drag to pan · Delete removes selection
+          </div>
 
           {nodes.length === 0 && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -320,6 +295,7 @@ function Canvas() {
           <ExecutionLog onClose={() => setShowLog(false)} />
         </div>
       )}
+      <TransactionReviewDialog />
     </div>
   );
 }

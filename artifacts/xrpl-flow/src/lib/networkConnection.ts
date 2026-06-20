@@ -1,0 +1,54 @@
+import * as XRPL from 'xrpl';
+import type { ConnectionStatus, NetworkType } from '@/store/workflowStore';
+import { NETWORK_URLS } from './xrplClient';
+
+type ConnectionHandlers = {
+  setClient: (client: XRPL.Client | null) => void;
+  setStatus: (status: ConnectionStatus) => void;
+};
+
+let connectionGeneration = 0;
+
+export async function disconnectXRPL(client: XRPL.Client | null, handlers: ConnectionHandlers): Promise<void> {
+  connectionGeneration += 1;
+  if (client) {
+    try { await client.disconnect(); } catch { /* already disconnected */ }
+  }
+  handlers.setClient(null);
+  handlers.setStatus('disconnected');
+}
+
+export async function connectXRPL(network: NetworkType, current: XRPL.Client | null, handlers: ConnectionHandlers): Promise<XRPL.Client> {
+  const generation = ++connectionGeneration;
+  if (current) {
+    try { await current.disconnect(); } catch { /* already disconnected */ }
+  }
+  handlers.setClient(null);
+  handlers.setStatus('connecting');
+  const client = new XRPL.Client(NETWORK_URLS[network]);
+  client.on('disconnected', () => {
+    if (generation !== connectionGeneration) return;
+    handlers.setClient(null);
+    handlers.setStatus('disconnected');
+  });
+  client.on('error', () => {
+    if (generation !== connectionGeneration) return;
+    handlers.setStatus('error');
+  });
+  try {
+    await client.connect();
+    if (generation !== connectionGeneration) {
+      await client.disconnect();
+      throw new Error('Connection was superseded by a newer network selection.');
+    }
+    handlers.setClient(client);
+    handlers.setStatus('connected');
+    return client;
+  } catch (error) {
+    if (generation === connectionGeneration) {
+      handlers.setClient(null);
+      handlers.setStatus('error');
+    }
+    throw error;
+  }
+}

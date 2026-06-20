@@ -196,7 +196,44 @@
 .react-flow__controls-button:hover { background-color: hsl(225 22% 12%) !important; }
 .react-flow__edge-path { stroke: hsl(210 100% 50% / 0.6) !important; }
 .react-flow__edge.selected .react-flow__edge-path { stroke: hsl(210 100% 50%) !important; }
-.react-flow__handle { width: 10px !important; height: 10px !important; border-width: 2px !important; }
+.react-flow__selection {
+  background: hsl(210 100% 50% / 0.08) !important;
+  border: 1px solid hsl(210 100% 60% / 0.7) !important;
+  border-radius: 6px;
+}
+.react-flow__handle.connection-handle {
+  width: 11px !important;
+  height: 11px !important;
+  border-width: 2px !important;
+  box-shadow: 0 0 0 2px hsl(225 25% 5% / 0.85);
+  cursor: crosshair;
+  opacity: 0;
+  transition: opacity 120ms ease, filter 120ms ease;
+  z-index: 20;
+}
+.connection-node:hover .react-flow__handle.connection-handle,
+.connection-node:focus-within .react-flow__handle.connection-handle,
+.is-connecting .react-flow__handle.connection-handle {
+  opacity: 0.9;
+}
+.react-flow__handle.connection-handle:hover {
+  opacity: 1;
+  filter: brightness(1.35);
+}
+.connection-port-label {
+  position: absolute;
+  z-index: 19;
+  pointer-events: none;
+  color: hsl(215 18% 62%);
+  font: 600 8px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.connection-node:hover .connection-port-label,
+.connection-node:focus-within .connection-port-label,
+.is-connecting .connection-port-label { opacity: 0.8; }
+.connection-port-label-true { right: 9px; top: 35%; transform: translateY(-50%); color: #6ee7b7; }
+.connection-port-label-false { right: 9px; top: 65%; transform: translateY(-50%); color: #fca5a5; }
 .react-flow__node.selected > div { box-shadow: 0 0 0 2px hsl(210 100% 50%) !important; }
 
 /* Scrollbar */

@@ -29,7 +29,7 @@ function BatchContainerNodeInner({ id, data, selected }: NodeProps) {
 
   return (
     <div
-      className={`relative w-full h-full rounded-lg border-2 ${statusBorder} bg-red-950/10`}
+      className={`connection-node relative w-full h-full rounded-lg border-2 ${statusBorder} bg-red-950/10`}
       data-testid={`batch-node-${id}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -69,10 +69,10 @@ function BatchContainerNodeInner({ id, data, selected }: NodeProps) {
         )}
       </div>
 
-      {/* Warning banner */}
+      {/* Usage hint */}
       <div className="mx-2 mt-2 px-2 py-1 bg-red-900/20 border border-red-800/30 rounded text-[9px] text-red-400 font-mono flex items-center gap-1">
         <AlertTriangle size={9} />
-        BatchV1_1 pending re-activation — drop inner tx nodes below
+        Drop 2–8 transaction nodes inside this container
       </div>
 
       {/* Status */}
@@ -86,14 +86,18 @@ function BatchContainerNodeInner({ id, data, selected }: NodeProps) {
 
       {/* Handles */}
       <Handle
+        className="connection-handle"
         type="target"
         position={Position.Left}
-        style={{ background: BATCH_COLOR, borderColor: '#0a0b0d', left: -5, top: '50%' }}
+        aria-label="Connect into Batch Container"
+        style={{ background: BATCH_COLOR, borderColor: '#f8fafc', left: -5, top: '50%' }}
       />
       <Handle
+        className="connection-handle"
         type="source"
         position={Position.Right}
-        style={{ background: BATCH_COLOR, borderColor: '#0a0b0d', right: -5, top: '50%' }}
+        aria-label="Connect from Batch Container"
+        style={{ background: BATCH_COLOR, borderColor: '#f8fafc', right: -5, top: '50%' }}
       />
     </div>
   );

@@ -1,4 +1,4 @@
-export type FieldType = 'text' | 'number' | 'drops' | 'address' | 'hex' | 'boolean' | 'select' | 'textarea' | 'amount';
+export type FieldType = 'text' | 'number' | 'drops' | 'address' | 'hex' | 'boolean' | 'select' | 'textarea' | 'amount' | 'issue';
 
 export interface FieldDef {
   name: string;
@@ -59,6 +59,8 @@ const ta     = (name: string, label: string, req = false, desc?: string): FieldD
 /** XRP-or-token amount widget: renders as drops input OR currency+issuer+value inputs */
 const amt    = (name: string, label: string, req = false, desc?: string): FieldDef =>
   ({ name, label, type: 'amount',   required: req, description: desc });
+const issue  = (name: string, label: string, req = false, desc?: string): FieldDef =>
+  ({ name, label, type: 'issue', required: req, description: desc });
 
 /**
  * Fields present on EVERY XRPL transaction (BaseTransaction).
@@ -75,8 +77,6 @@ const COMMON_FIELDS: FieldDef[] = [
   num  ('NetworkID',           'Network ID'),
   ta   ('Memos',               'Memos (JSON)', false,
         '[{"Memo":{"MemoType":"hex","MemoData":"hex"}}]'),
-  ta   ('Signers',             'Signers (JSON — multi-sig)', false,
-        '[{"Signer":{"Account":"r...","TxnSignature":"hex","SigningPubKey":"hex"}}]'),
 ];
 
 /** Append COMMON_FIELDS after a node's required/optional fields. */
@@ -100,6 +100,7 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
       addr('WatchAddress', 'Watch Address'),
       txt ('EventType', 'Filter: Transaction Type', false,
            'Leave blank for any. e.g. Payment, OfferCreate'),
+      num ('TimeoutSeconds', 'Timeout (seconds)', false),
     ],
   },
 
@@ -180,6 +181,17 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
       num ('TicketCount',  'Ticket Count (1–250)', true),
     ]),
   },
+  {
+    id: 'DelegateSet', label: 'DelegateSet',
+    category: 'Account Management', color: CATEGORIES.ACCOUNT_MANAGEMENT.color,
+    networkGating: 'all', description: 'Grant transaction permissions to another account.',
+    fields: withCommon([
+      addr('Account', 'Account'),
+      addr('Authorize', 'Authorized Account'),
+      ta('Permissions', 'Permissions (JSON)', true,
+        '[{"Permission":{"PermissionValue":"Payment"}}]'),
+    ]),
+  },
 
   // ── Payments & Channels ──────────────────────────────────────────────────
   {
@@ -192,7 +204,11 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
       amt ('Amount',         'Amount',                        true),
       amt ('SendMax',        'Send Max (cross-currency)',     false),
       amt ('DeliverMin',     'Deliver Min (partial payment)', false),
+      amt ('DeliverMax',     'Deliver Max',                   false),
       hex ('InvoiceID',      'Invoice ID'),
+      hex ('DomainID',       'Permissioned Domain ID'),
+      ta  ('CredentialIDs',  'Credential IDs (JSON array)', false,
+           '["CREDENTIAL_ID"]'),
       num ('DestinationTag', 'Destination Tag'),
       ta  ('Paths',          'Paths (JSON)', false,
            '[[{"account":"r..."},{"currency":"USD","issuer":"r..."}]]'),
@@ -333,6 +349,7 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: withCommon([
       addr('Account', 'Account (Issuer)'),
       amt ('Amount',  'Amount (issuer field = holder address)', true),
+      addr('Holder',  'MPT Holder', false),
     ]),
   },
 
@@ -354,8 +371,8 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     networkGating: 'all', description: 'Deposit assets into an AMM.',
     fields: withCommon([
       addr('Account',     'Account'),
-      txt ('Asset',       'Asset',   true),
-      txt ('Asset2',      'Asset 2', true),
+      issue('Asset',       'Asset',   true),
+      issue('Asset2',      'Asset 2', true),
       amt ('Amount',      'Amount (asset 1)'),
       amt ('Amount2',     'Amount 2 (asset 2)'),
       amt ('LPTokenOut',  'LP Token Out'),
@@ -375,8 +392,8 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     networkGating: 'all', description: 'Withdraw assets from an AMM.',
     fields: withCommon([
       addr('Account',     'Account'),
-      txt ('Asset',       'Asset',   true),
-      txt ('Asset2',      'Asset 2', true),
+      issue('Asset',       'Asset',   true),
+      issue('Asset2',      'Asset 2', true),
       amt ('Amount',      'Amount (asset 1)'),
       amt ('Amount2',     'Amount 2 (asset 2)'),
       amt ('LPTokenIn',   'LP Token In'),
@@ -397,8 +414,8 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     networkGating: 'all', description: 'Vote on AMM trading fees.',
     fields: withCommon([
       addr('Account',    'Account'),
-      txt ('Asset',      'Asset',   true),
-      txt ('Asset2',     'Asset 2', true),
+      issue('Asset',      'Asset',   true),
+      issue('Asset2',     'Asset 2', true),
       num ('TradingFee', 'Trading Fee (0–1000)', true),
     ]),
   },
@@ -408,8 +425,8 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     networkGating: 'all', description: 'Bid on the AMM auction slot.',
     fields: withCommon([
       addr('Account',      'Account'),
-      txt ('Asset',        'Asset',   true),
-      txt ('Asset2',       'Asset 2', true),
+      issue('Asset',        'Asset',   true),
+      issue('Asset2',       'Asset 2', true),
       amt ('BidMin',       'Bid Min'),
       amt ('BidMax',       'Bid Max'),
       ta  ('AuthAccounts', 'Auth Accounts (JSON array)', false,
@@ -422,8 +439,8 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     networkGating: 'all', description: 'Delete an empty AMM instance.',
     fields: withCommon([
       addr('Account', 'Account'),
-      txt ('Asset',   'Asset',   true),
-      txt ('Asset2',  'Asset 2', true),
+      issue('Asset',   'Asset',   true),
+      issue('Asset2',  'Asset 2', true),
     ]),
   },
   {
@@ -433,9 +450,11 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: withCommon([
       addr('Account', 'Account (Issuer)'),
       addr('Holder',  'Holder', true),
-      txt ('Asset',   'Asset',   true),
-      txt ('Asset2',  'Asset 2', true),
+      issue('Asset',   'Asset',   true),
+      issue('Asset2',  'Asset 2', true),
       amt ('Amount',  'Amount (optional cap)'),
+      bool('tfClawTwoAssets', 'Claw Back Both Assets'),
+      flags(),
     ]),
   },
 
@@ -717,23 +736,28 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     networkGating: 'devnet-only', description: 'Create a Single Asset Vault.',
     fields: withCommon([
       addr('Account',         'Account'),
-      txt ('Asset',           'Asset', true,
-           '{"currency":"USD","issuer":"r..."} or {"currency":"XRP"} for XRP'),
+      issue('Asset',           'Asset', true),
       txt ('AssetsMaximum',   'Assets Maximum (leave blank for unlimited)'),
+      hex ('Data',            'Metadata (hex)'),
       hex ('MPTokenMetadata', 'Metadata (hex)'),
+      num ('WithdrawalPolicy','Withdrawal Policy'),
+      hex ('DomainID',        'Permissioned Domain ID'),
+      num ('Scale',           'Share Scale (IOU only, 0–18)'),
       bool('tfVaultPrivate',  'Private Vault'),
+      bool('tfVaultShareNonTransferable', 'Non-transferable Shares'),
       flags(),
     ]),
   },
   {
-    id: 'VaultUpdate', label: 'VaultUpdate',
+    id: 'VaultSet', label: 'VaultSet',
     category: 'Vaults', color: CATEGORIES.VAULTS.color,
     networkGating: 'devnet-only', description: 'Update vault parameters.',
     fields: withCommon([
       addr('Account',       'Account'),
       hex ('VaultID',       'Vault ID', true),
+      hex ('Data',          'Metadata (hex)'),
       txt ('AssetsMaximum', 'Assets Maximum'),
-      flags(),
+      hex ('DomainID',      'Permissioned Domain ID'),
     ]),
   },
   {
@@ -744,7 +768,6 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
       addr('Account',     'Account'),
       hex ('VaultID',     'Vault ID', true),
       amt ('Amount',      'Amount (deposited asset)', true),
-      txt ('MPTokenOut',  'LP Token Out (min shares expected)'),
     ]),
   },
   {
@@ -754,8 +777,9 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: withCommon([
       addr('Account',    'Account'),
       hex ('VaultID',    'Vault ID', true),
-      amt ('Amount',     'Amount (asset to withdraw)'),
-      txt ('MPTokenIn',  'LP Token In (shares to burn)'),
+      amt ('Amount',     'Amount (asset to withdraw)', true),
+      addr('Destination','Destination', false),
+      num ('DestinationTag', 'Destination Tag'),
     ]),
   },
   {
@@ -786,10 +810,13 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     networkGating: 'devnet-only', description: 'Create or update a loan broker.',
     fields: withCommon([
       addr('Account',        'Account'),
-      txt ('Asset',          'Asset', true),
       hex ('VaultID',        'Vault ID', true),
-      txt ('MaximumAmount',  'Maximum Amount'),
-      flags(),
+      hex ('LoanBrokerID',   'Loan Broker ID (when updating)'),
+      hex ('Data',           'Metadata (hex)'),
+      txt ('DebtMaximum',    'Debt Maximum'),
+      num ('ManagementFeeRate', 'Management Fee Rate'),
+      num ('CoverRateMinimum', 'Minimum Cover Rate'),
+      num ('CoverRateLiquidation', 'Liquidation Cover Rate'),
     ]),
   },
   {
@@ -802,7 +829,7 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     ]),
   },
   {
-    id: 'LoanBrokerDeposit', label: 'LoanBrokerDeposit',
+    id: 'LoanBrokerCoverDeposit', label: 'LoanBrokerCoverDeposit',
     category: 'Lending Protocol', color: CATEGORIES.LENDING.color,
     networkGating: 'devnet-only', description: 'Deposit first-loss capital.',
     fields: withCommon([
@@ -812,23 +839,24 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     ]),
   },
   {
-    id: 'LoanBrokerWithdraw', label: 'LoanBrokerWithdraw',
+    id: 'LoanBrokerCoverWithdraw', label: 'LoanBrokerCoverWithdraw',
     category: 'Lending Protocol', color: CATEGORIES.LENDING.color,
     networkGating: 'devnet-only', description: 'Withdraw first-loss capital.',
     fields: withCommon([
       addr('Account',      'Account'),
       hex ('LoanBrokerID', 'Loan Broker ID', true),
       amt ('Amount',       'Amount', true),
+      addr('Destination',  'Destination', false),
+      num ('DestinationTag','Destination Tag'),
     ]),
   },
   {
-    id: 'LoanBrokerClawback', label: 'LoanBrokerClawback',
+    id: 'LoanBrokerCoverClawback', label: 'LoanBrokerCoverClawback',
     category: 'Lending Protocol', color: CATEGORIES.LENDING.color,
     networkGating: 'devnet-only', description: 'Claw back first-loss capital.',
     fields: withCommon([
       addr('Account',      'Account'),
-      hex ('LoanBrokerID', 'Loan Broker ID', true),
-      addr('Holder',       'Holder', true),
+      hex ('LoanBrokerID', 'Loan Broker ID'),
       amt ('Amount',       'Amount'),
     ]),
   },
@@ -837,14 +865,25 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     category: 'Lending Protocol', color: CATEGORIES.LENDING.color,
     networkGating: 'devnet-only', description: 'Create a loan agreement.',
     fields: withCommon([
-      addr('Account',                              'Account (Broker Submitter)'),
-      hex ('LoanBrokerID',                         'Loan Broker ID', true),
-      addr('Borrower',                             'Borrower',       true),
-      amt ('Principal',                            'Principal',      true),
-      num ('AnnualInterestRate',                   'Annual Interest Rate (bps)', true),
-      num ('Term',                                 'Term (seconds)',             true),
-      hex ('CounterpartySignature_SigningPubKey',   'Counterparty Pub Key',       true),
-      hex ('CounterpartySignature_TxnSignature',   'Counterparty Signature',     true),
+      addr('Account',             'Account (Loan Broker)'),
+      hex ('LoanBrokerID',        'Loan Broker ID', true),
+      txt ('PrincipalRequested',  'Principal Requested', true),
+      addr('Counterparty',        'Counterparty', true),
+      hex ('Data',                'Metadata (hex)'),
+      txt ('LoanOriginationFee',  'Origination Fee'),
+      txt ('LoanServiceFee',      'Service Fee'),
+      txt ('LatePaymentFee',      'Late Payment Fee'),
+      txt ('ClosePaymentFee',     'Close Payment Fee'),
+      num ('OverpaymentFee',      'Overpayment Fee Rate'),
+      num ('InterestRate',        'Interest Rate'),
+      num ('LateInterestRate',    'Late Interest Rate'),
+      num ('CloseInterestRate',   'Close Interest Rate'),
+      num ('OverpaymentInterestRate', 'Overpayment Interest Rate'),
+      num ('PaymentTotal',        'Payment Count'),
+      num ('PaymentInterval',     'Payment Interval (seconds)'),
+      num ('GracePeriod',         'Grace Period (seconds)'),
+      bool('tfLoanOverpayment',   'Allow Overpayment'),
+      flags(),
     ]),
   },
   {
@@ -855,7 +894,9 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
       addr('Account', 'Account'),
       hex ('LoanID',  'Loan ID', true),
       amt ('Amount',  'Amount',  true),
-      bool('tfPayInterestOnly', 'Pay Interest Only'),
+      bool('tfLoanOverpayment', 'Overpayment'),
+      bool('tfLoanFullPayment', 'Full Early Payment'),
+      bool('tfLoanLatePayment', 'Late Payment'),
       flags(),
     ]),
   },
@@ -866,8 +907,9 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: withCommon([
       addr('Account', 'Account'),
       hex ('LoanID',  'Loan ID', true),
-      bool('tfDefault', 'Mark as Default'),
-      bool('tfImpair',  'Impair Loan'),
+      bool('tfLoanDefault', 'Mark as Default'),
+      bool('tfLoanImpair',  'Impair Loan'),
+      bool('tfLoanUnimpair','Unimpair Loan'),
       flags(),
     ]),
   },
@@ -905,10 +947,10 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
   {
     id: 'ConditionBranch', label: 'Condition Branch',
     category: 'Control Flow', color: CATEGORIES.CONTROL_FLOW.color,
-    networkGating: 'all', description: 'Route flow based on a JS condition.',
+    networkGating: 'all', description: 'Route flow using a safe expression.',
     fields: [
-      txt('Expression', 'Expression (JS)', true,
-          'e.g. output?.meta?.TransactionResult === "tesSUCCESS"'),
+      txt('Expression', 'Safe Expression', true,
+          'e.g. output.meta.TransactionResult == "tesSUCCESS"'),
       txt('TrueLabel',  'True Branch Label',  false),
       txt('FalseLabel', 'False Branch Label', false),
     ],
@@ -926,18 +968,18 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: [],
   },
   {
-    id: 'Loop', label: 'Loop',
+    id: 'LoopContainer', label: 'Loop Container',
     category: 'Control Flow', color: CATEGORIES.CONTROL_FLOW.color,
-    networkGating: 'all', description: 'Repeat downstream nodes N times or until a condition.',
+    networkGating: 'all', description: 'Repeat contained nodes, then continue downstream once.',
     fields: [
       {
         name: 'LoopMode', label: 'Loop Mode', type: 'select', required: true,
         defaultValue: 'count',
         options: ['count', 'until-condition'],
-        description: '"count" repeats N times; "until-condition" loops until the JS expression is truthy',
+        description: '"count" repeats N times; "until-condition" uses the safe expression',
       },
       num('Iterations',    'Max Iterations (count mode)'),
-      txt('Condition',     'Stop Condition (JS expression)', false,
+      txt('Condition',     'Stop Condition (safe expression)', false,
           'Evaluated after each iteration. e.g. output.count >= 3'),
       num('DelayBetween',  'Delay Between Iterations (ms)'),
     ],

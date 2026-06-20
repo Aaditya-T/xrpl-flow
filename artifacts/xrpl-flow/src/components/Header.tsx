@@ -1,10 +1,14 @@
 import { useState, useRef } from 'react';
-import { Play, Square, Save, Download, Upload, Pencil, Check, X, Wifi, WifiOff } from 'lucide-react';
+import { Play, Square, Save, Download, Upload, Pencil, Check, X, Wifi, WifiOff, Copy, Trash2, LayoutTemplate, Sparkles } from 'lucide-react';
 import { useWorkflowStore } from '@/store/workflowStore';
 import { NETWORK_URLS, EXPLORER_URLS } from '@/lib/xrplClient';
-import * as XRPL from 'xrpl';
-import { runWorkflow, validateWorkflow } from '@/lib/workflowEngine';
+import { runWorkflow, validateWorkflowGraph } from '@/lib/workflowEngine';
 import { cn } from '@/lib/utils';
+import { getNodeDef } from '@/lib/nodeRegistry';
+import { WORKFLOW_VERSION, type WorkflowDocumentV2 } from '@/lib/workflowTypes';
+import { connectXRPL } from '@/lib/networkConnection';
+import { WorkflowLibrary } from './WorkflowLibrary';
+import { AIWorkflowAssistant } from './AIWorkflowAssistant';
 
 function XRPLLogo() {
   return (
@@ -21,15 +25,19 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
   const [nameInput, setNameInput] = useState('');
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState('');
+  const [importError, setImportError] = useState('');
+  const [showWorkflowLibrary, setShowWorkflowLibrary] = useState(false);
+  const [showAIAssistant, setShowAIAssistant] = useState(false);
   const [validationErrors, setValidationErrors] = useState<{ nodeLabel: string; fieldLabel: string }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const {
-    currentWorkflowName, setCurrentWorkflowName, saveWorkflow, loadWorkflow,
-    savedWorkflows, nodes, edges, loadInitialWorkflows,
+    currentWorkflowName, currentWorkflowId, currentWorkflowCreatedAt, setCurrentWorkflowName, saveWorkflow, loadWorkflow,
+    savedWorkflows, nodes, edges, loadInitialWorkflows, deleteWorkflow, duplicateWorkflow, dirty,
     network, setNetwork, xrplClient, connectionStatus, setConnectionStatus, setClient,
     wallets, activeWalletId, setNodeStatus, addLogEntry, resetNodeStatuses,
+    requestTransactionReview,
   } = useWorkflowStore();
 
   const activeWallet = wallets.find(w => w.id === activeWalletId);
@@ -51,7 +59,18 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
   };
 
   const handleExport = () => {
-    const data = JSON.stringify({ name: currentWorkflowName, nodes, edges }, null, 2);
+    const saved = savedWorkflows[currentWorkflowName];
+    const now = Date.now();
+    const workflowDocument: WorkflowDocumentV2 = {
+      version: WORKFLOW_VERSION,
+      id: saved?.id || currentWorkflowId,
+      name: currentWorkflowName,
+      createdAt: saved?.createdAt || currentWorkflowCreatedAt,
+      updatedAt: now,
+      nodes: nodes as WorkflowDocumentV2['nodes'],
+      edges,
+    };
+    const data = JSON.stringify(workflowDocument, null, 2);
     const blob = new Blob([data], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -64,18 +83,31 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
   const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setImportError('');
+    if (file.size > 2_000_000) {
+      setImportError('Import rejected: workflow files are limited to 2 MB.');
+      e.target.value = '';
+      return;
+    }
     const reader = new FileReader();
     reader.onload = ev => {
       try {
-        const wf = JSON.parse(ev.target?.result as string);
-        if (wf.nodes && wf.edges) {
-          loadInitialWorkflows({
-            ...savedWorkflows,
-            [wf.name || 'Imported']: { name: wf.name || 'Imported', nodes: wf.nodes, edges: wf.edges },
-          });
-          loadWorkflow(wf.name || 'Imported');
+        const wf = JSON.parse(ev.target?.result as string) as Partial<WorkflowDocumentV2>;
+        if (wf.version !== WORKFLOW_VERSION) throw new Error('v1 workflows are incompatible with XRPL Flow v2 and cannot be imported.');
+        if (!wf.id || !wf.name || !Number.isFinite(wf.createdAt) || !Number.isFinite(wf.updatedAt) || !Array.isArray(wf.nodes) || !Array.isArray(wf.edges)) {
+          throw new Error('Malformed v2 workflow document.');
         }
-      } catch { /* ignore */ }
+        if (wf.nodes.length > 500 || wf.edges.length > 1_000) throw new Error('Workflow exceeds the 500-node / 1,000-edge safety limit.');
+        const unknown = wf.nodes.find(node => !node.type || !getNodeDef(node.type));
+        if (unknown) throw new Error(`Unsupported node type: ${String(unknown.type)}`);
+        const graphErrors = validateWorkflowGraph(wf.nodes, wf.edges);
+        if (graphErrors.length) throw new Error(`Invalid workflow: ${graphErrors[0].nodeLabel} — ${graphErrors[0].fieldLabel}`);
+        loadInitialWorkflows({ ...savedWorkflows, [wf.name]: wf as WorkflowDocumentV2 });
+        loadWorkflow(wf.name);
+        setShowWorkflowLibrary(false);
+      } catch (error) {
+        setImportError(error instanceof Error ? error.message : 'Could not import this workflow.');
+      }
     };
     reader.readAsText(file);
     e.target.value = '';
@@ -83,18 +115,10 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
 
   const connectNetwork = async (net: typeof network) => {
     setNetwork(net);
-    if (xrplClient) {
-      try { await xrplClient.disconnect(); } catch { /* ignore */ }
-      setClient(null);
-    }
-    setConnectionStatus('connecting');
     try {
-      const client = new XRPL.Client(NETWORK_URLS[net]);
-      await client.connect();
-      setClient(client);
-      setConnectionStatus('connected');
+      await connectXRPL(net, xrplClient, { setClient, setStatus: setConnectionStatus });
     } catch {
-      setConnectionStatus('error');
+      // The shared service publishes the failure state.
     }
   };
 
@@ -110,7 +134,7 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
     }
 
     // Pre-run field validation
-    const errors = validateWorkflow(nodes);
+    const errors = validateWorkflowGraph(nodes, edges);
     if (errors.length > 0) {
       setValidationErrors(errors);
       return;
@@ -132,6 +156,15 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
           addLogEntry,
           getExplorerUrl: (hash) => `${EXPLORER_URLS[network]}${hash}`,
           network,
+          reviewTransaction: async (transaction, simulation, signerAddresses, nodeId, nodeLabel) => requestTransactionReview({
+            id: crypto.randomUUID(), nodeId, nodeLabel, network, transaction, simulation,
+            signerAddresses,
+            warnings: [
+              transaction.TransactionType === 'Payment' ? 'Verify the destination and amount before continuing.' : 'This transaction changes Mainnet ledger state.',
+              Number(transaction.Fee || 0) > 1000 ? `High fee: ${String(transaction.Fee)} drops` : '',
+              typeof transaction.Amount === 'string' && Number(transaction.Amount) >= 100_000_000 ? `Large XRP amount: ${(Number(transaction.Amount) / 1_000_000).toLocaleString()} XRP` : '',
+            ].filter(Boolean),
+          }),
         },
         wallets,
         controller.signal,
@@ -155,8 +188,6 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
     connected: '#10b981',
     error: '#ef4444',
   }[connectionStatus];
-
-  const workflowNames = Object.keys(savedWorkflows);
 
   return (
     <header className="flex items-center gap-2 px-3 h-11 bg-[#0e1018] border-b border-[#1e2130] flex-shrink-0" data-testid="header">
@@ -204,21 +235,16 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
         title="Save workflow"
         className="flex items-center gap-1 px-2 py-1 text-[10px] text-slate-400 hover:text-slate-200 bg-[#1e2130] hover:bg-[#252b3b] border border-[#2e3448] rounded transition-colors"
       >
-        <Save size={10} />Save
+        <Save size={10} />{dirty ? 'Save*' : 'Saved'}
       </button>
 
-      {/* Load */}
-      {workflowNames.length > 0 && (
-        <select
-          onChange={e => { if (e.target.value) loadWorkflow(e.target.value); }}
-          value=""
-          data-testid="load-workflow"
-          className="bg-[#1e2130] border border-[#2e3448] rounded text-[10px] text-slate-400 px-2 py-1 outline-none cursor-pointer hover:bg-[#252b3b] transition-colors"
-        >
-          <option value="" disabled>Load workflow...</option>
-          {workflowNames.map(n => <option key={n} value={n}>{n}</option>)}
-        </select>
-      )}
+      {savedWorkflows[currentWorkflowName] && <>
+        <button type="button" title="Duplicate workflow" aria-label="Duplicate workflow" onClick={() => duplicateWorkflow(currentWorkflowName)} className="p-1.5 text-slate-400 hover:text-slate-100"><Copy size={11} /></button>
+        <button type="button" title="Delete workflow" aria-label="Delete workflow" onClick={() => { if (confirm(`Delete “${currentWorkflowName}”?`)) deleteWorkflow(currentWorkflowName); }} className="p-1.5 text-slate-400 hover:text-red-400"><Trash2 size={11} /></button>
+      </>}
+
+      <button type="button" onClick={() => setShowWorkflowLibrary(true)} data-testid="open-workflow-library" className="flex items-center gap-1.5 rounded border border-[#2e3448] bg-[#1e2130] px-2 py-1 text-[10px] text-slate-300 transition-colors hover:border-blue-500/40 hover:bg-[#252b3b] hover:text-white"><LayoutTemplate size={11} className="text-blue-400" />Workflows</button>
+      <button type="button" onClick={() => setShowAIAssistant(true)} data-testid="open-ai-assistant" className="flex items-center gap-1.5 rounded border border-violet-700/40 bg-violet-950/25 px-2 py-1 text-[10px] text-violet-300 transition-colors hover:border-violet-500/60 hover:bg-violet-900/30 hover:text-violet-200"><Sparkles size={11} />Ask AI</button>
 
       {/* Export */}
       <button
@@ -242,6 +268,9 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
         <Upload size={10} />
       </button>
       <input ref={fileInputRef} type="file" accept=".json" onChange={handleImportFile} className="hidden" />
+
+      <WorkflowLibrary open={showWorkflowLibrary} onClose={() => setShowWorkflowLibrary(false)} onImport={() => fileInputRef.current?.click()} />
+      <AIWorkflowAssistant open={showAIAssistant} onClose={() => setShowAIAssistant(false)} />
 
       {/* Spacer */}
       <div className="flex-1" />
@@ -272,6 +301,9 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
       {runError && (
         <span className="text-[10px] text-red-400 font-mono truncate max-w-[200px]">{runError}</span>
       )}
+      {importError && (
+        <button type="button" onClick={() => setImportError('')} title={importError} className="text-[10px] text-red-400 font-mono truncate max-w-[280px]">{importError}</button>
+      )}
 
       {/* Log toggle */}
       <button
@@ -288,7 +320,7 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
         value={network}
         onChange={e => connectNetwork(e.target.value as typeof network)}
         data-testid="network-selector"
-        className="bg-[#1e2130] border border-[#2e3448] rounded text-[10px] text-slate-400 px-2 py-1 outline-none cursor-pointer hover:bg-[#252b3b] transition-colors"
+        className={cn('rounded text-[10px] px-2 py-1 outline-none cursor-pointer transition-colors', network === 'mainnet' ? 'bg-red-950 border-2 border-red-500 text-red-200 font-bold' : 'bg-[#1e2130] border border-[#2e3448] text-slate-400 hover:bg-[#252b3b]')}
       >
         <option value="mainnet">Mainnet</option>
         <option value="testnet">Testnet</option>

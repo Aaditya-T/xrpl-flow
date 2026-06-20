@@ -4,6 +4,7 @@ import { Plus, Key, Droplets, Copy, Check, ChevronDown, ChevronUp, Trash2 } from
 import { useWorkflowStore } from '@/store/workflowStore';
 import { NETWORK_URLS, EXPLORER_URLS, fundWalletWithFaucet } from '@/lib/xrplClient';
 import { cn } from '@/lib/utils';
+import { connectXRPL, disconnectXRPL } from '@/lib/networkConnection';
 
 const BALANCE_POLL_MS = 30_000;
 
@@ -208,19 +209,20 @@ export function WalletPanel() {
   };
 
   const importWallet = () => {
-    if (!importSeed.trim()) return;
+    const seed = importSeed.trim();
+    if (!seed) return;
+    setImportSeed('');
     setImportLoading(true);
     setError('');
     try {
-      const w = XRPL.Wallet.fromSeed(importSeed.trim());
+      const w = XRPL.Wallet.fromSeed(seed);
       addWallet({
         id: crypto.randomUUID(),
         name: `Imported ${wallets.length + 1}`,
         address: w.address,
         publicKey: w.publicKey,
-        seed: importSeed.trim(),
+        seed,
       });
-      setImportSeed('');
     } catch (e: any) {
       setError(e.message || 'Invalid seed');
     } finally {
@@ -254,28 +256,15 @@ export function WalletPanel() {
 
   const connect = async (net: typeof network) => {
     setError('');
-    if (xrplClient) {
-      try { await xrplClient.disconnect(); } catch { /* ignore */ }
-      setClient(null);
-    }
-    setConnectionStatus('connecting');
     try {
-      const client = new XRPL.Client(NETWORK_URLS[net]);
-      await client.connect();
-      setClient(client);
-      setConnectionStatus('connected');
+      await connectXRPL(net, xrplClient, { setClient, setStatus: setConnectionStatus });
     } catch (e: any) {
-      setConnectionStatus('error');
       setError(e.message || 'Connection failed');
     }
   };
 
   const disconnect = async () => {
-    if (xrplClient) {
-      try { await xrplClient.disconnect(); } catch { /* ignore */ }
-      setClient(null);
-    }
-    setConnectionStatus('disconnected');
+    await disconnectXRPL(xrplClient, { setClient, setStatus: setConnectionStatus });
   };
 
   const handleNetworkChange = async (net: typeof network) => {
@@ -333,6 +322,9 @@ export function WalletPanel() {
           )}
 
           <div className="space-y-1.5 pt-1">
+            <div role="note" className="rounded border border-amber-800/40 bg-amber-950/20 px-2.5 py-2 text-[9px] leading-relaxed text-amber-300">
+              Secrets stay in this browser tab's memory and are cleared on refresh. Never use a seed you cannot afford to expose on this device.
+            </div>
             <button
               type="button"
               onClick={generateWallet}
@@ -344,7 +336,9 @@ export function WalletPanel() {
 
             <div className="flex gap-1.5">
               <input
-                type="text"
+                type="password"
+                autoComplete="new-password"
+                spellCheck={false}
                 value={importSeed}
                 onChange={e => setImportSeed(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') importWallet(); }}
