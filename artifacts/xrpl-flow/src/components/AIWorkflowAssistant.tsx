@@ -77,7 +77,15 @@ function sanitizeGeneratedWorkflow(raw: any): GeneratedWorkflow {
     if (edgeIds.has(id)) throw new Error(`Duplicate generated edge ID: ${id}`);
     edgeIds.add(id);
     if (!ids.has(String(candidate.source)) || !ids.has(String(candidate.target))) throw new Error(`Generated edge ${id} references a missing node.`);
-    const sourceHandle = candidate.sourceHandle === null ? undefined : String(candidate.sourceHandle);
+    const sourceNode = nodes.find(node => node.id === String(candidate.source));
+    const proposedHandle = candidate.sourceHandle === null ? undefined : String(candidate.sourceHandle);
+    // Models occasionally invent branch labels for ParallelSplit. Only a
+    // ConditionBranch has named source handles; every other node uses its
+    // single unnamed output port, so normalize those harmless mistakes.
+    const sourceHandle = sourceNode?.type === 'ConditionBranch' ? proposedHandle : undefined;
+    if (sourceNode?.type === 'ConditionBranch' && sourceHandle !== 'true' && sourceHandle !== 'false') {
+      throw new Error(`Condition edge ${id} must use the true or false output.`);
+    }
     return { id, source: String(candidate.source), target: String(candidate.target), ...(sourceHandle ? { sourceHandle } : {}) };
   });
   const structuralErrors = validateWorkflowStructure(nodes, edges);
@@ -124,7 +132,7 @@ export function AIWorkflowAssistant({ open, onClose }: { open: boolean; onClose:
       const currentGraph = { name: currentWorkflowName, nodes: nodes.map(node => ({ id: node.id, type: node.type, parentId: node.parentId, config: node.data?.config })), edges: edges.map(edge => ({ source: edge.source, target: edge.target, sourceHandle: edge.sourceHandle })) };
       const response = await client.responses.create({
         model,
-        instructions: `You design safe XRPL Flow v2 workflow graphs. Return a useful short message and a complete workflow. Use only registry node types. Never use XChain or LedgerStateFix. Exactly one trigger is required. Ordinary nodes have at most one outgoing edge; branching uses ConditionBranch or ParallelSplit. Condition edges must use sourceHandle true/false. ParallelSplit needs at least two branches. Container children use parentId and have no graph edges. Batch needs 2-8 transaction children and is Devnet-only. Loop children execute in position order. Leave unknown addresses/hashes as empty strings and explain what the user must fill in. Amount config objects use {"type":"xrp","drops":"..."}, {"type":"token","currency":"USD","issuer":"","value":"..."}, or {"type":"mpt","issuanceId":"","value":"..."}. Each configJson must itself be a valid serialized JSON object. Lay nodes out left-to-right with generous spacing. Available registry: ${JSON.stringify(registryContext)}. Current workflow, which may be replaced or adapted if relevant: ${JSON.stringify(currentGraph)}.`,
+        instructions: `You design safe XRPL Flow v2 workflow graphs. Return a useful short message and a complete workflow. Use only registry node types. Never use XChain or LedgerStateFix. Exactly one trigger is required. Ordinary nodes have at most one outgoing edge; branching uses ConditionBranch or ParallelSplit. Condition edges must use sourceHandle "true" or "false". Every other edge, including every ParallelSplit edge, must set sourceHandle to null. ParallelSplit needs at least two branches. Container children use parentId and have no graph edges. Batch needs 2-8 transaction children and is Devnet-only. Loop children execute in position order. Leave unknown addresses/hashes as empty strings and explain what the user must fill in. Amount config objects use {"type":"xrp","drops":"..."}, {"type":"token","currency":"USD","issuer":"","value":"..."}, or {"type":"mpt","issuanceId":"","value":"..."}. Each configJson must itself be a valid serialized JSON object. Lay nodes out left-to-right with generous spacing. Available registry: ${JSON.stringify(registryContext)}. Current workflow, which may be replaced or adapted if relevant: ${JSON.stringify(currentGraph)}.`,
         input: [...messages.slice(-6).map(message => ({ role: message.role, content: message.text } as const)), { role: 'user', content: userPrompt }],
         text: { format: { type: 'json_schema', name: 'xrpl_workflow', strict: true, schema: RESPONSE_SCHEMA } },
       }, { signal: controller.signal });
