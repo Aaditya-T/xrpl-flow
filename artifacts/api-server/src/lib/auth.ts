@@ -8,7 +8,17 @@ function base64url(input: string | Buffer): string {
 }
 
 function sessionSecret(): string {
-  return process.env["XRPL_FLOW_SESSION_SECRET"] || "dev-only-change-me";
+  const secret = process.env["XRPL_FLOW_SESSION_SECRET"]?.trim();
+  if (secret) return secret;
+  if (process.env["NODE_ENV"] === "production") throw new Error("XRPL_FLOW_SESSION_SECRET is not configured.");
+  return "dev-only-change-me";
+}
+
+function safeTimingEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  if (left.byteLength !== right.byteLength) return false;
+  return crypto.timingSafeEqual(left, right);
 }
 
 export type MarketplaceUser = {
@@ -32,7 +42,7 @@ export function verifySessionToken(token: string | undefined): MarketplaceUser |
   const [encodedPayload, signature] = token.split(".");
   if (!encodedPayload || !signature) return null;
   const expected = crypto.createHmac("sha256", sessionSecret()).update(encodedPayload).digest("base64url");
-  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+  if (!safeTimingEqual(signature, expected)) return null;
   try {
     const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8")) as { sub?: string; name?: string; exp?: number };
     if (!payload.sub || !payload.exp || Date.now() > payload.exp) return null;
@@ -69,7 +79,7 @@ export function verifySignedState<T extends Record<string, unknown>>(state: stri
   const [encodedPayload, signature] = state.split(".");
   if (!encodedPayload || !signature) return null;
   const expected = crypto.createHmac("sha256", sessionSecret()).update(encodedPayload).digest("base64url");
-  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+  if (!safeTimingEqual(signature, expected)) return null;
   try {
     const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8")) as T & { iat?: number };
     if (!payload.iat || Date.now() - payload.iat > ttlMs) return null;

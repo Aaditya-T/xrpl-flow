@@ -1,6 +1,7 @@
 import type { Edge, Node } from '@xyflow/react';
 import * as XRPL from 'xrpl';
 import { NODE_REGISTRY, type FieldDef, type NodeTypeDef } from '@/lib/nodeRegistry';
+import { QUERY_NODE_TYPES } from '@/lib/queryNodes';
 import type { AmountValue, IssueValue, WorkflowDocumentV2 } from '@/lib/workflowTypes';
 
 export const ACCOUNT = 'rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh';
@@ -167,10 +168,7 @@ export function transactionDefinitions(): NodeTypeDef[] {
   const nonTransactions = new Set([
     'ManualTrigger', 'AccountEventTrigger', 'ConditionBranch', 'ParallelSplit',
     'SyncJoin', 'LoopContainer', 'Delay', 'LogOutput', 'BatchContainer',
-    'AccountInfoQuery', 'AccountLinesQuery', 'AccountTxQuery', 'AccountObjectsQuery',
-    'LedgerQuery', 'TxQuery', 'NFTInfoQuery', 'NFTHistoryQuery', 'NFTsByIssuerQuery',
-    'RawLedgerQuery', 'PickOutput', 'FilterItems', 'DedupeItems', 'AccumulateItems',
-    'FormatTrustLines', 'ExportCsv',
+    ...QUERY_NODE_TYPES,
   ]);
   return NODE_REGISTRY.filter(item => !nonTransactions.has(item.id));
 }

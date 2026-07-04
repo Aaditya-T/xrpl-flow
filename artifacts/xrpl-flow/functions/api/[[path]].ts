@@ -77,7 +77,9 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 function sessionSecret(env: Env): string {
-  return env.XRPL_FLOW_SESSION_SECRET || "dev-only-change-me";
+  const secret = env.XRPL_FLOW_SESSION_SECRET?.trim();
+  if (!secret) throw new Error("XRPL_FLOW_SESSION_SECRET is not configured.");
+  return secret;
 }
 
 async function createSessionToken(env: Env, user: MarketplaceUser): Promise<string> {
@@ -91,6 +93,7 @@ async function createSessionToken(env: Env, user: MarketplaceUser): Promise<stri
 
 async function verifySessionToken(env: Env, token: string | undefined): Promise<MarketplaceUser | null> {
   if (!token || !token.includes(".")) return null;
+  if (!env.XRPL_FLOW_SESSION_SECRET?.trim()) return null;
   const [encodedPayload, signature] = token.split(".");
   if (!encodedPayload || !signature) return null;
   const expected = await hmac(sessionSecret(env), encodedPayload);
@@ -111,6 +114,7 @@ async function signedState(env: Env, payload: Record<string, unknown>): Promise<
 
 async function verifySignedState<T extends Record<string, unknown>>(env: Env, state: string | undefined, ttlMs = 10 * 60 * 1000): Promise<T | null> {
   if (!state || !state.includes(".")) return null;
+  if (!env.XRPL_FLOW_SESSION_SECRET?.trim()) return null;
   const [encodedPayload, signature] = state.split(".");
   if (!encodedPayload || !signature) return null;
   const expected = await hmac(sessionSecret(env), encodedPayload);
@@ -269,7 +273,9 @@ async function publishMarketplace(env: Env, request: Request): Promise<Response>
 }
 
 async function startXaman(env: Env, request: Request): Promise<Response> {
-  if (!env.XAMAN_CLIENT_ID) return json({ error: "Xaman OAuth is not configured. Set XAMAN_CLIENT_ID and XAMAN_CLIENT_SECRET." }, { status: 501 });
+  if (!env.XAMAN_CLIENT_ID || !env.XRPL_FLOW_SESSION_SECRET?.trim()) {
+    return json({ error: "Xaman OAuth is not configured. Set XAMAN_CLIENT_ID, XAMAN_CLIENT_SECRET, and XRPL_FLOW_SESSION_SECRET." }, { status: 501 });
+  }
   const url = new URL(request.url);
   const redirectUri = `${publicBaseUrl(env, request)}/api/auth/xaman/callback`;
   const state = await signedState(env, { returnTo: sanitizeReturnTo(url.searchParams.get("returnTo"), request) });
@@ -285,8 +291,11 @@ async function startXaman(env: Env, request: Request): Promise<Response> {
 async function callbackXaman(env: Env, request: Request): Promise<Response> {
   const url = new URL(request.url);
   const code = url.searchParams.get("code") || "";
+  if (!env.XAMAN_CLIENT_ID || !env.XAMAN_CLIENT_SECRET || !env.XRPL_FLOW_SESSION_SECRET?.trim()) {
+    return new Response("Xaman OAuth is not configured.", { status: 501 });
+  }
   const state = await verifySignedState<{ returnTo?: string }>(env, url.searchParams.get("state") || undefined);
-  if (!env.XAMAN_CLIENT_ID || !env.XAMAN_CLIENT_SECRET || !code || !state) {
+  if (!code || !state) {
     return new Response("Invalid Xaman OAuth callback.", { status: 400 });
   }
   const redirectUri = `${publicBaseUrl(env, request)}/api/auth/xaman/callback`;

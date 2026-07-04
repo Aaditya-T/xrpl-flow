@@ -99,6 +99,13 @@ test('surfaces invalid workflow imports', async ({ page }) => {
   await expect(page.getByText(/Invalid workflow: Workflow/i)).toBeVisible();
 });
 
+test('labels query-only templates as zero-transaction workflows', async ({ page }) => {
+  await page.getByTestId('open-workflow-library').click();
+
+  const snapshotTemplate = page.locator('article').filter({ hasText: 'Token Holder Snapshot' });
+  await expect(snapshotTemplate).toContainText('4 nodes · 1 queries · 0 txns');
+});
+
 test('browses and publishes marketplace templates with mocked API responses', async ({ page }) => {
   await page.getByTestId('open-workflow-library').click();
   await page.getByRole('navigation').getByRole('button', { name: 'Marketplace' }).click();

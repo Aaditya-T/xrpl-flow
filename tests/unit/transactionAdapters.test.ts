@@ -1,5 +1,6 @@
 import * as XRPL from 'xrpl';
 import { describe, expect, it } from 'vitest';
+import { QUERY_NODE_TYPES } from '@/lib/queryNodes';
 import { buildValidatedTransaction, getTransactionAdapter } from '@/lib/transactionAdapters';
 import { ACCOUNT, validTransactionConfig, transactionDefinitions, xrpAmount } from '../helpers/fixtures';
 
@@ -10,6 +11,11 @@ describe('transaction adapters', () => {
     expect(transaction.TransactionType).toBe(type);
     expect(transaction.Account).toBeTruthy();
     expect(() => XRPL.validate(transaction as Record<string, unknown>)).not.toThrow();
+  });
+
+  it.each([...QUERY_NODE_TYPES])('does not expose %s as a transaction adapter', (type) => {
+    expect(getTransactionAdapter(type)).toBeUndefined();
+    expect(() => buildValidatedTransaction(type, {}, ACCOUNT)).toThrow(/unsupported transaction type/i);
   });
 
   it.each(

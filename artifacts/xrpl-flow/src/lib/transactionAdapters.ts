@@ -1,6 +1,7 @@
 import * as XRPL from 'xrpl';
 import { z } from 'zod';
 import { NODE_REGISTRY, type FieldDef, type NodeTypeDef } from './nodeRegistry';
+import { QUERY_NODE_TYPES } from './queryNodes';
 import type { AmountValue, IssueValue } from './workflowTypes';
 
 export type TransactionConfig = Record<string, unknown>;
@@ -18,6 +19,7 @@ export interface TransactionAdapter<TConfig extends TransactionConfig = Transact
 const NON_TRANSACTION_TYPES = new Set([
   'ManualTrigger', 'AccountEventTrigger', 'ConditionBranch', 'ParallelSplit',
   'SyncJoin', 'LoopContainer', 'Delay', 'LogOutput', 'BatchContainer',
+  ...QUERY_NODE_TYPES,
 ]);
 
 const JSON_FIELDS = new Set([
