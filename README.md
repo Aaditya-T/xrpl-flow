@@ -161,15 +161,4 @@ v1 workflows are not migrated. Imports are validated for size, known node types,
 
 Condition and loop expressions use an allowlisted `jsep` grammar. They may read `output` properties and use literals, parentheses, comparison/equality, boolean operators, and unary `!`. Function calls, assignments, computed properties, constructors, and global access are rejected.
 
-## Beta Readiness Checklist
-
-Before making the repository public or announcing a hosted beta:
-
-- Confirm `.env`, `.env.*`, `.dev.vars`, local wallets, API tokens, and funded test credentials are not tracked.
-- Set `XRPL_FLOW_SESSION_SECRET` in Cloudflare before enabling Xaman sign-in or template publishing.
-- Apply the D1 schema to the remote `xrpl-flow-marketplace` database.
-- Run `pnpm test:ci` from a clean checkout.
-- Run a Cloudflare Pages deploy dry run or preview deploy.
-- Smoke test health, marketplace list, Xaman start/callback, template publish, and Mainnet review prompts on the deployed URL.
-
 Pull-request CI runs `pnpm test:ci`: typecheck, build, offline Vitest tests, and mocked Playwright tests.
