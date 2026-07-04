@@ -41,7 +41,6 @@ export type MarketplaceTemplate = {
 
 export type MarketplaceListResult = {
   templates: MarketplaceTemplate[];
-  storage: 'memory' | 'cloudflare-d1' | 'unknown';
 };
 
 export function getMarketplaceSession(): string {
@@ -112,8 +111,8 @@ export async function createDevMarketplaceSession(address: string): Promise<Mark
 }
 
 export async function listMarketplaceTemplates(): Promise<MarketplaceListResult> {
-  const result = await api<{ templates: MarketplaceTemplate[]; storage?: MarketplaceListResult['storage'] }>('/marketplace/templates');
-  return { templates: result.templates, storage: result.storage || 'unknown' };
+  const result = await api<{ templates: MarketplaceTemplate[] }>('/marketplace/templates');
+  return { templates: result.templates };
 }
 
 export async function publishMarketplaceTemplate(input: {
@@ -121,10 +120,10 @@ export async function publishMarketplaceTemplate(input: {
   description: string;
   tags: string[];
   workflow: WorkflowDocumentV2;
-}): Promise<{ template: MarketplaceTemplate; storage: MarketplaceListResult['storage'] }> {
-  const result = await api<{ template: MarketplaceTemplate; storage?: MarketplaceListResult['storage'] }>('/marketplace/templates', {
+}): Promise<{ template: MarketplaceTemplate }> {
+  const result = await api<{ template: MarketplaceTemplate }>('/marketplace/templates', {
     method: 'POST',
     body: JSON.stringify(input),
   });
-  return { template: result.template, storage: result.storage || 'unknown' };
+  return { template: result.template };
 }

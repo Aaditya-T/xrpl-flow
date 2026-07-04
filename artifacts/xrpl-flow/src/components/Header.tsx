@@ -95,7 +95,7 @@ function AdvancedNetworkSettings({ network, onSaved }: { network: NetworkType; o
       )}
 
       <div className="mt-3 rounded border border-blue-900/40 bg-blue-950/20 p-2 text-[9px] leading-relaxed text-blue-200/80">
-        Public servers can rate-limit or disappear. For production/hosted runs, use your own rippled/Clio node or a managed provider. Authenticated/commercial URLs are intentionally not stored here yet.
+        Public servers can rate-limit or become unavailable. For heavier workflows, use your own rippled/Clio node or a managed provider.
       </div>
       {error && <p className="mt-2 text-[9px] text-red-400">{error}</p>}
       <div className="mt-3 flex items-center justify-between">
@@ -313,7 +313,7 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
   const activeProfile = getNetworkProfile(network);
   const xamanLabel = marketplaceUser?.address
     ? `${marketplaceUser.address.slice(0, 6)}…${marketplaceUser.address.slice(-4)}`
-    : 'Connect Xaman';
+    : 'Sign in';
 
   return (
     <header className="flex items-center gap-2 px-3 h-11 bg-[#0e1018] border-b border-[#1e2130] flex-shrink-0" data-testid="header">
@@ -462,7 +462,7 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
           className="flex items-center gap-1.5 rounded bg-violet-600 px-2.5 py-1 text-[10px] font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-60"
         >
           <LogIn size={11} />
-          {marketplaceAuthBusy ? 'Connecting…' : 'Connect Xaman'}
+          {marketplaceAuthBusy ? 'Signing in…' : 'Sign in'}
         </button>
       )}
 

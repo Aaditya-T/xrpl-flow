@@ -216,7 +216,7 @@ async function listMarketplace(env: Env, request: Request): Promise<Response> {
     .filter(item => !tag || item.tags.includes(tag))
     .filter(item => !q || [item.name, item.description, item.authorName, ...item.tags].join(" ").toLowerCase().includes(q))
     .slice(0, 100);
-  return json({ templates, storage: "cloudflare-d1" });
+  return json({ templates });
 }
 
 async function publishMarketplace(env: Env, request: Request): Promise<Response> {
@@ -265,7 +265,7 @@ async function publishMarketplace(env: Env, request: Request): Promise<Response>
     template.createdAt,
     template.updatedAt,
   ).run();
-  return json({ template, storage: "cloudflare-d1" }, { status: 201 });
+  return json({ template }, { status: 201 });
 }
 
 async function startXaman(env: Env, request: Request): Promise<Response> {

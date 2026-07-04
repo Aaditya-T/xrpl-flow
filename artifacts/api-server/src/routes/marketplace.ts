@@ -128,7 +128,7 @@ router.get("/marketplace/templates", rateLimit({ keyPrefix: "market-list", windo
       .filter(item => !q || [item.name, item.description, item.authorName, ...item.tags].join(" ").toLowerCase().includes(q))
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, 100);
-    res.json({ templates: items, storage: isD1Configured() ? "cloudflare-d1" : "memory" });
+    res.json({ templates: items });
   } catch (error) {
     res.status(502).json({ error: error instanceof Error ? error.message : "Could not load marketplace templates." });
   }
@@ -175,7 +175,7 @@ router.post(
     };
     try {
       await createTemplate(template);
-      res.status(201).json({ template, storage: isD1Configured() ? "cloudflare-d1" : "memory" });
+      res.status(201).json({ template });
     } catch (error) {
       res.status(502).json({ error: error instanceof Error ? error.message : "Could not publish marketplace template." });
     }

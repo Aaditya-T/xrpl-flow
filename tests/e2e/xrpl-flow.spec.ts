@@ -44,7 +44,6 @@ test.beforeEach(async ({ page }) => {
             createdAt: Date.now(),
             updatedAt: Date.now(),
           },
-          storage: 'memory',
         }),
       });
     }
@@ -63,7 +62,6 @@ test.beforeEach(async ({ page }) => {
           createdAt: Date.now(),
           updatedAt: Date.now(),
         }],
-        storage: 'memory',
       }),
     });
   });
@@ -105,7 +103,8 @@ test('browses and publishes marketplace templates with mocked API responses', as
   await page.getByTestId('open-workflow-library').click();
   await page.getByRole('navigation').getByRole('button', { name: 'Marketplace' }).click();
   await expect(page.getByText('Marketplace Query Template')).toBeVisible();
-  await expect(page.getByText(/Storage: memory fallback/i)).toBeVisible();
+  await expect(page.getByText(/Sign in with Xaman to publish your workflow templates|Signed in as/i)).toBeVisible();
+  await expect(page.getByText(/Storage:|Cloudflare D1|memory fallback/i)).toHaveCount(0);
 
   page.on('dialog', async dialog => {
     await dialog.accept(dialog.message().includes('Tags') ? 'Community,Template' : 'Browser smoke publish');

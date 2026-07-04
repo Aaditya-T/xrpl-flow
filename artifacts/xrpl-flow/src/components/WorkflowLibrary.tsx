@@ -68,7 +68,6 @@ export function WorkflowLibrary({
   const [filter, setFilter] = useState<LibraryFilter>('templates');
   const [activeTags, setActiveTags] = useState<string[]>([]);
   const [marketplaceTemplates, setMarketplaceTemplates] = useState<MarketplaceTemplate[]>([]);
-  const [marketplaceStorage, setMarketplaceStorage] = useState<'unknown' | 'memory' | 'cloudflare-d1'>('unknown');
   const [marketplaceError, setMarketplaceError] = useState('');
   const [publishing, setPublishing] = useState(false);
   const [selectedLocalWorkflows, setSelectedLocalWorkflows] = useState<string[]>([]);
@@ -88,10 +87,7 @@ export function WorkflowLibrary({
   useEffect(() => {
     if (!open) return;
     void listMarketplaceTemplates()
-      .then(result => {
-        setMarketplaceTemplates(result.templates);
-        setMarketplaceStorage(result.storage);
-      })
+      .then(result => setMarketplaceTemplates(result.templates))
       .catch(error => setMarketplaceError(error instanceof Error ? error.message : 'Could not load marketplace.'));
   }, [open]);
 
@@ -185,9 +181,8 @@ export function WorkflowLibrary({
       if (workflowUsesBatch(workflow, tags)) {
         throw new Error('Batch templates are disabled for now. Remove Batch nodes before publishing.');
       }
-      const { template, storage } = await publishMarketplaceTemplate({ name: currentWorkflowName, description, tags, workflow });
+      const { template } = await publishMarketplaceTemplate({ name: currentWorkflowName, description, tags, workflow });
       setMarketplaceTemplates(previous => [template, ...previous]);
-      setMarketplaceStorage(storage);
       setFilter('marketplace');
     } catch (error) {
       setMarketplaceError(error instanceof Error ? error.message : 'Publish failed.');
@@ -214,18 +209,11 @@ export function WorkflowLibrary({
       </div>
       <div className="mt-4 rounded-lg border border-violet-900/40 bg-violet-950/20 p-3">
         <p className="text-[10px] font-semibold text-violet-200">Marketplace</p>
-        <p className="mt-1 text-[9px] leading-relaxed text-violet-100/70">{marketplaceUser ? `Connected as ${marketplaceUser.displayName || marketplaceUser.address}` : 'Connect Xaman from the header to publish templates.'}</p>
-        <p className={`mt-2 text-[8px] font-mono ${marketplaceStorage === 'cloudflare-d1' ? 'text-emerald-300' : marketplaceStorage === 'memory' ? 'text-amber-300' : 'text-slate-500'}`}>
-          Storage: {marketplaceStorage === 'cloudflare-d1' ? 'Cloudflare D1' : marketplaceStorage === 'memory' ? 'memory fallback' : 'checking…'}
-        </p>
-        {marketplaceUser ? <button type="button" onClick={onSignOutXaman} className="mt-3 w-full rounded border border-violet-800/50 px-2 py-1.5 text-[9px] text-violet-200 hover:bg-violet-900/30">Disconnect Xaman</button> : <button type="button" onClick={onRequestXamanSignIn} className="mt-3 flex w-full items-center justify-center gap-1 rounded bg-violet-600 px-2 py-1.5 text-[9px] font-medium text-white hover:bg-violet-500">Connect Xaman</button>}
+        <p className="mt-1 text-[9px] leading-relaxed text-violet-100/70">{marketplaceUser ? `Signed in as ${marketplaceUser.displayName || marketplaceUser.address}` : 'Sign in with Xaman to publish your workflow templates.'}</p>
+        {marketplaceUser ? <button type="button" onClick={onSignOutXaman} className="mt-3 w-full rounded border border-violet-800/50 px-2 py-1.5 text-[9px] text-violet-200 hover:bg-violet-900/30">Sign out</button> : <button type="button" onClick={onRequestXamanSignIn} className="mt-3 flex w-full items-center justify-center gap-1 rounded bg-violet-600 px-2 py-1.5 text-[9px] font-medium text-white hover:bg-violet-500">Sign in with Xaman</button>}
         <button type="button" onClick={publishCurrent} disabled={publishing} className="mt-2 flex w-full items-center justify-center gap-1 rounded border border-emerald-800/50 px-2 py-1.5 text-[9px] text-emerald-200 hover:bg-emerald-900/25 disabled:opacity-50"><Send size={10} />{publishing ? 'Publishing…' : 'Publish current'}</button>
         {marketplaceAuthError && <p className="mt-2 text-left text-[9px] leading-relaxed text-red-300">{marketplaceAuthError}</p>}
         {marketplaceError && <button type="button" onClick={() => setMarketplaceError('')} className="mt-2 text-left text-[9px] leading-relaxed text-red-300">{marketplaceError}</button>}
-      </div>
-      <div className="mt-5 rounded-lg border border-blue-900/40 bg-blue-950/20 p-3">
-        <p className="text-[10px] font-semibold text-blue-200">Production help</p>
-        <p className="mt-1 text-[9px] leading-relaxed text-blue-100/70">Manual browser runs are free. For 24/7 hosted runners, custom workflows, node hosting, or team onboarding, contact the developer.</p>
       </div>
       <div className="mt-3 rounded-lg border border-emerald-900/40 bg-emerald-950/20 p-3">
         <p className="text-[10px] font-semibold text-emerald-200">Tutorial mode</p>
