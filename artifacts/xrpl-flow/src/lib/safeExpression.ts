@@ -40,6 +40,10 @@ function evaluateNode(node: AstNode, output: unknown): unknown {
       return node.operator === '&&' ? left && Boolean(evaluateNode(node.right!, output)) : left || Boolean(evaluateNode(node.right!, output));
     }
     case 'BinaryExpression': {
+      if (LOGICAL_OPERATORS.has(node.operator!)) {
+        const left = Boolean(evaluateNode(node.left!, output));
+        return node.operator === '&&' ? left && Boolean(evaluateNode(node.right!, output)) : left || Boolean(evaluateNode(node.right!, output));
+      }
       if (!BINARY_OPERATORS.has(node.operator!)) throw new Error(`Binary operator "${node.operator}" is not allowed.`);
       const left = evaluateNode(node.left!, output);
       const right = evaluateNode(node.right!, output);

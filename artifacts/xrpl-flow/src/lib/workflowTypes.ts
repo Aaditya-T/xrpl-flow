@@ -67,7 +67,7 @@ export interface TransactionReviewRequest {
   id: string;
   nodeId: string;
   nodeLabel: string;
-  network: 'mainnet' | 'testnet' | 'devnet';
+  network: 'mainnet' | 'testnet' | 'devnet' | 'custom';
   transaction: Record<string, unknown>;
   signerAddresses: string[];
   simulation?: unknown;

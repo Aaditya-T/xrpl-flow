@@ -1,0 +1,11 @@
+name = "xrpl-flow-api"
+compatibility_date = "2026-06-27"
+compatibility_flags = ["nodejs_compat"]
+
+# After running `pnpm --filter @workspace/api-server d1:create`, paste the
+# generated database_id below if you port the API to Cloudflare Workers/Pages.
+#
+[[d1_databases]]
+binding = "xrpl_flow_marketplace"
+database_name = "xrpl-flow-marketplace"
+database_id = "b3c460ac-24fb-4c99-8366-f183a2e1be4c"

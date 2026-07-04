@@ -1,15 +1,15 @@
-# Dependency policy: packages must age for one day before installation.
-minimumReleaseAge: 1440
-
-minimumReleaseAgeExclude:
-  - '@replit/*'
-  - stripe-replit-sync
-
 packages:
   - artifacts/*
   - lib/*
   - lib/integrations/*
   - scripts
+
+allowBuilds:
+  esbuild: true
+  sharp: true
+  workerd: true
+
+autoInstallPeers: false
 
 catalog:
   '@replit/vite-plugin-cartographer': ^0.5.21
@@ -30,12 +30,16 @@ catalog:
   react-dom: 19.1.0
   tailwind-merge: ^3.3.1
   tailwindcss: ^4.1.14
-  tsx: ^4.21.0
+  tsx: 4.21.0
   vite: ^7.3.2
   wouter: ^3.3.5
   zod: ^3.25.76
 
-autoInstallPeers: false
+minimumReleaseAge: 1440
+
+minimumReleaseAgeExclude:
+  - '@replit/*'
+  - stripe-replit-sync
 
 onlyBuiltDependencies:
   - '@swc/core'
@@ -43,7 +47,6 @@ onlyBuiltDependencies:
   - msw
   - unrs-resolver
 
-# Keep dependency resolution portable; native packages are selected by pnpm.
 overrides:
   '@esbuild-kit/esm-loader': npm:tsx@^4.21.0
   esbuild: 0.27.3

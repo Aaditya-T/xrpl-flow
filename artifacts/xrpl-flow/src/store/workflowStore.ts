@@ -17,8 +17,8 @@ import {
   type TransactionReviewRequest,
   type WorkflowDocumentV2,
 } from '@/lib/workflowTypes';
+import type { NetworkType } from '@/lib/xrplClient';
 
-export type NetworkType    = 'mainnet' | 'testnet' | 'devnet';
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 export type NodeStatus     = 'idle' | 'running' | 'success' | 'failed';
 
@@ -113,6 +113,7 @@ interface WorkflowState {
   loadWorkflow: (name: string) => void;
   loadInitialWorkflows: (workflows: Record<string, SavedWorkflow>) => void;
   deleteWorkflow: (name: string) => void;
+  deleteWorkflows: (names: string[]) => void;
   duplicateWorkflow: (name: string) => void;
   createWorkflow: (name: string, nodes: Node[], edges: Edge[]) => void;
   requestTransactionReview: (request: TransactionReviewRequest) => Promise<boolean>;
@@ -342,6 +343,21 @@ export const useWorkflowStore = create<WorkflowState>()(
         localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(state.savedWorkflows));
       });
     },
+    deleteWorkflows: (names) => {
+      set((state) => {
+        const toDelete = new Set(names);
+        for (const name of toDelete) delete state.savedWorkflows[name];
+        if (toDelete.has(state.currentWorkflowName)) {
+          state.currentWorkflowName = 'Untitled Workflow';
+          state.currentWorkflowId = crypto.randomUUID();
+          state.currentWorkflowCreatedAt = Date.now();
+          state.nodes = [];
+          state.edges = [];
+          state.dirty = false;
+        }
+        localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(state.savedWorkflows));
+      });
+    },
     duplicateWorkflow: (name) => {
       set((state) => {
         const source = state.savedWorkflows[name];
@@ -367,10 +383,7 @@ export const useWorkflowStore = create<WorkflowState>()(
     createWorkflow: (name, nodes, edges) => {
       set((state) => {
         const baseName = name.trim() || 'AI Generated Workflow';
-        let uniqueName = baseName;
-        let suffix = 2;
-        while (state.savedWorkflows[uniqueName]) uniqueName = `${baseName} ${suffix++}`;
-        state.currentWorkflowName = uniqueName;
+        state.currentWorkflowName = baseName;
         state.currentWorkflowId = crypto.randomUUID();
         state.currentWorkflowCreatedAt = Date.now();
         state.nodes = clonePlain(nodes);

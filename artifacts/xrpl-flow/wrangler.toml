@@ -1,0 +1,8 @@
+name = "xrpl-flow"
+compatibility_date = "2026-07-02"
+pages_build_output_dir = "dist/public"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "xrpl-flow-marketplace"
+database_id = "b3c460ac-24fb-4c99-8366-f183a2e1be4c"

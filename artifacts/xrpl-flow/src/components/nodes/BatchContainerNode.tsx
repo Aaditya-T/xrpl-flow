@@ -13,7 +13,7 @@ interface BatchContainerData {
 
 function BatchContainerNodeInner({ id, data, selected }: NodeProps) {
   const d = data as BatchContainerData;
-  const { nodeStatus, network } = useWorkflowStore();
+  const { nodeStatus } = useWorkflowStore();
   const { deleteElements } = useReactFlow();
   const [hovered, setHovered] = useState(false);
   const statusInfo = nodeStatus[id];
@@ -29,7 +29,7 @@ function BatchContainerNodeInner({ id, data, selected }: NodeProps) {
 
   return (
     <div
-      className={`connection-node relative w-full h-full rounded-lg border-2 ${statusBorder} bg-red-950/10`}
+      className={`connection-node relative w-full h-full rounded-lg border-2 ${statusBorder} bg-red-950/10 overflow-hidden`}
       data-testid={`batch-node-${id}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -47,14 +47,9 @@ function BatchContainerNodeInner({ id, data, selected }: NodeProps) {
       <div className="flex items-center gap-2 px-3 py-2 border-b border-red-800/40 bg-red-950/20 rounded-t-lg">
         <Layers size={12} style={{ color: BATCH_COLOR }} />
         <span className="text-[11px] font-medium text-slate-100">Batch Container</span>
-        <span className="text-[9px] font-mono bg-red-900/60 text-red-400 border border-red-800/50 px-1.5 py-0.5 rounded ml-auto">
-          {mode}
+        <span className="text-[9px] font-mono bg-amber-950/80 text-amber-300 border border-amber-700/50 px-1.5 py-0.5 rounded ml-auto">
+          COMING SOON
         </span>
-        {network !== 'devnet' && (
-          <span className="text-[8px] font-mono bg-lime-900/60 text-lime-400 border border-lime-800/50 px-1 py-0.5 rounded flex items-center gap-0.5">
-            <AlertTriangle size={7} />DEVNET
-          </span>
-        )}
         {(hovered || selected) && (
           <button
             className="flex items-center justify-center w-4 h-4 rounded bg-[#1e2130] hover:bg-red-600/80 text-slate-400 hover:text-white transition-colors nodrag"
@@ -72,7 +67,10 @@ function BatchContainerNodeInner({ id, data, selected }: NodeProps) {
       {/* Usage hint */}
       <div className="mx-2 mt-2 px-2 py-1 bg-red-900/20 border border-red-800/30 rounded text-[9px] text-red-400 font-mono flex items-center gap-1">
         <AlertTriangle size={9} />
-        Drop 2–8 transaction nodes inside this container
+        Batch is not live yet, including on Devnet. Existing nodes are disabled.
+      </div>
+      <div className="mx-2 mt-1 text-[8px] text-slate-600 font-mono blur-[1px]">
+        Planned mode: {mode}
       </div>
 
       {/* Status */}
@@ -99,6 +97,7 @@ function BatchContainerNodeInner({ id, data, selected }: NodeProps) {
         aria-label="Connect from Batch Container"
         style={{ background: BATCH_COLOR, borderColor: '#f8fafc', right: -5, top: '50%' }}
       />
+      <div className="pointer-events-none absolute inset-0 bg-[#080a10]/15 backdrop-blur-[1px]" />
     </div>
   );
 }

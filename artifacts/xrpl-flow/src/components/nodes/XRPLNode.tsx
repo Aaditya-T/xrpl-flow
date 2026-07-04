@@ -81,9 +81,14 @@ function XRPLNodeInner({ id, type, data, selected }: NodeProps) {
         <span className="font-medium truncate text-slate-100 text-[11px] leading-tight">{label}</span>
       </div>
 
-      {/* Category label */}
-      <div className="px-4 pb-2">
-        <span className="text-[9px] text-slate-500 font-mono uppercase tracking-wider">{category}</span>
+      {/* Category label + lower badges */}
+      <div className="flex items-center justify-between gap-2 px-4 pb-2">
+        <span className="min-w-0 truncate text-[9px] text-slate-500 font-mono uppercase tracking-wider">{category}</span>
+        {isDevnetOnly && (
+          <span className="flex-shrink-0 text-[8px] font-mono bg-lime-900/60 text-lime-400 border border-lime-800/50 px-1 py-0.5 rounded">
+            DEVNET
+          </span>
+        )}
       </div>
 
       {/* Status bar */}
@@ -102,11 +107,6 @@ function XRPLNodeInner({ id, type, data, selected }: NodeProps) {
 
       {/* Badges + delete button */}
       <div className="absolute top-1.5 right-1.5 flex gap-1 items-center">
-        {isDevnetOnly && (
-          <span className="text-[8px] font-mono bg-lime-900/60 text-lime-400 border border-lime-800/50 px-1 py-0.5 rounded">
-            DEVNET
-          </span>
-        )}
         {isBatch && (
           <span className="text-[8px] font-mono bg-red-900/60 text-red-400 border border-red-800/50 px-1 py-0.5 rounded flex items-center gap-0.5">
             <AlertTriangle size={7} />PENDING

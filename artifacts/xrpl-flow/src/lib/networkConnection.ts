@@ -1,6 +1,6 @@
 import * as XRPL from 'xrpl';
-import type { ConnectionStatus, NetworkType } from '@/store/workflowStore';
-import { NETWORK_URLS } from './xrplClient';
+import type { ConnectionStatus } from '@/store/workflowStore';
+import { getNetworkProfile, type NetworkType } from './xrplClient';
 
 type ConnectionHandlers = {
   setClient: (client: XRPL.Client | null) => void;
@@ -25,7 +25,12 @@ export async function connectXRPL(network: NetworkType, current: XRPL.Client | n
   }
   handlers.setClient(null);
   handlers.setStatus('connecting');
-  const client = new XRPL.Client(NETWORK_URLS[network]);
+  const profile = getNetworkProfile(network);
+  if (!profile.primaryUrl) {
+    handlers.setStatus('error');
+    throw new Error('No primary XRPL endpoint is configured for this network.');
+  }
+  const client = new XRPL.Client(profile.primaryUrl);
   client.on('disconnected', () => {
     if (generation !== connectionGeneration) return;
     handlers.setClient(null);

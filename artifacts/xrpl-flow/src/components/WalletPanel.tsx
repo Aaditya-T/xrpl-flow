@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import * as XRPL from 'xrpl';
 import { Plus, Key, Droplets, Copy, Check, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { useWorkflowStore } from '@/store/workflowStore';
-import { NETWORK_URLS, EXPLORER_URLS, fundWalletWithFaucet } from '@/lib/xrplClient';
+import { EXPLORER_URLS, fundWalletWithFaucet, getNetworkProfile } from '@/lib/xrplClient';
 import { cn } from '@/lib/utils';
 import { connectXRPL, disconnectXRPL } from '@/lib/networkConnection';
 
@@ -54,7 +54,7 @@ function WalletCard({ wallet }: { wallet: { id: string; name: string; address: s
 
   const handleFund = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (network === 'mainnet' || funding) return;
+    if (network === 'mainnet' || network === 'custom' || funding) return;
     setFunding(true);
     setFundError('');
     try {
@@ -107,7 +107,7 @@ function WalletCard({ wallet }: { wallet: { id: string; name: string; address: s
           >↻</button>
 
           {/* Fund button — inline, no expand needed */}
-          {network !== 'mainnet' && (
+          {network !== 'mainnet' && network !== 'custom' && (
             <button
               type="button"
               onClick={handleFund}
@@ -232,20 +232,24 @@ export function WalletPanel() {
 
   /** Create a brand-new funded wallet when none exist */
   const createFundedWallet = async () => {
-    if (network === 'mainnet') return;
+    if (network === 'mainnet' || network === 'custom') return;
     setFaucetLoading(true);
     setError('');
     try {
       const res = await fundWalletWithFaucet(network);
       const acct = res.account;
-      const w = XRPL.Wallet.fromSeed(acct.secret);
+      const seed = acct.seed || acct.secret;
+      if (!seed) {
+        throw new Error('Faucet funded an address but did not return a seed. Use Generate Wallet, then Fund that wallet instead.');
+      }
+      const w = XRPL.Wallet.fromSeed(seed);
       addWallet({
         id: crypto.randomUUID(),
         name: `Faucet ${wallets.length + 1}`,
         address: acct.classicAddress || w.address,
         publicKey: w.publicKey,
-        seed: acct.secret,
-        balance: '1000',
+        seed,
+        balance: acct.balance || '1000',
       });
     } catch (e: any) {
       setError(e.message || 'Faucet failed');
@@ -357,7 +361,7 @@ export function WalletPanel() {
               </button>
             </div>
 
-            {network !== 'mainnet' && (
+            {network !== 'mainnet' && network !== 'custom' && (
               <button
                 type="button"
                 onClick={createFundedWallet}
@@ -378,7 +382,7 @@ export function WalletPanel() {
           <div>
             <p className="text-[9px] font-mono text-slate-500 uppercase tracking-widest mb-2">Network</p>
             <div className="space-y-1">
-              {(['mainnet', 'testnet', 'devnet'] as const).map(net => (
+              {(['mainnet', 'testnet', 'devnet', 'custom'] as const).map(net => (
                 <button
                   key={net}
                   type="button"
@@ -394,6 +398,9 @@ export function WalletPanel() {
                   <span className="font-medium capitalize">{net}</span>
                   {net === 'devnet' && (
                     <span className="text-[8px] text-lime-500 font-mono">DEVNET</span>
+                  )}
+                  {net === 'custom' && (
+                    <span className="text-[8px] text-sky-500 font-mono">ADV</span>
                   )}
                 </button>
               ))}
@@ -426,7 +433,7 @@ export function WalletPanel() {
                 </button>
               )}
             </div>
-            <p className="text-[9px] text-slate-600 font-mono mt-1">{NETWORK_URLS[network]}</p>
+            <p className="text-[9px] text-slate-600 font-mono mt-1">{getNetworkProfile(network).primaryUrl || 'Configure a custom endpoint in Header → Advanced'}</p>
           </div>
 
           {error && (

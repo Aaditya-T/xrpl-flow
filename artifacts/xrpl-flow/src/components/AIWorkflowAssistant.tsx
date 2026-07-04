@@ -52,6 +52,7 @@ function sanitizeGeneratedWorkflow(raw: any): GeneratedWorkflow {
     ids.add(id);
     const definition = getNodeDef(String(candidate.type));
     if (!definition) throw new Error(`AI proposed unsupported node type: ${String(candidate.type)}`);
+    if (definition.id === 'BatchContainer') throw new Error('AI proposed BatchContainer, but Batch is coming soon and disabled.');
     let config: Record<string, unknown> = {};
     try {
       const parsed = JSON.parse(String(candidate.configJson || '{}'));
@@ -69,7 +70,7 @@ function sanitizeGeneratedWorkflow(raw: any): GeneratedWorkflow {
   });
   for (const node of nodes.filter(node => node.parentId)) {
     const parent = nodes.find(candidate => candidate.id === node.parentId);
-    if (!parent || (parent.type !== 'BatchContainer' && parent.type !== 'LoopContainer')) throw new Error(`Invalid container parent for ${node.id}.`);
+    if (!parent || parent.type !== 'LoopContainer') throw new Error(`Invalid container parent for ${node.id}.`);
   }
   const edgeIds = new Set<string>();
   const edges: Edge[] = raw.workflow.edges.map((candidate: any, index: number) => {
@@ -132,7 +133,19 @@ export function AIWorkflowAssistant({ open, onClose }: { open: boolean; onClose:
       const currentGraph = { name: currentWorkflowName, nodes: nodes.map(node => ({ id: node.id, type: node.type, parentId: node.parentId, config: node.data?.config })), edges: edges.map(edge => ({ source: edge.source, target: edge.target, sourceHandle: edge.sourceHandle })) };
       const response = await client.responses.create({
         model,
-        instructions: `You design safe XRPL Flow v2 workflow graphs. Return a useful short message and a complete workflow. Use only registry node types. Never use XChain or LedgerStateFix. Exactly one trigger is required. Ordinary nodes have at most one outgoing edge; branching uses ConditionBranch or ParallelSplit. Condition edges must use sourceHandle "true" or "false". Every other edge, including every ParallelSplit edge, must set sourceHandle to null. ParallelSplit needs at least two branches. Container children use parentId and have no graph edges. Batch needs 2-8 transaction children and is Devnet-only. Loop children execute in position order. Leave unknown addresses/hashes as empty strings and explain what the user must fill in. Amount config objects use {"type":"xrp","drops":"..."}, {"type":"token","currency":"USD","issuer":"","value":"..."}, or {"type":"mpt","issuanceId":"","value":"..."}. Each configJson must itself be a valid serialized JSON object. Lay nodes out left-to-right with generous spacing. Available registry: ${JSON.stringify(registryContext)}. Current workflow, which may be replaced or adapted if relevant: ${JSON.stringify(currentGraph)}.`,
+        instructions: `You design safe XRPL Flow v2 workflow graphs. Return a useful short message and a complete workflow. Use only registry node types. Never use XChain, LedgerStateFix, or BatchContainer. Exactly one trigger is required. Ordinary nodes have at most one outgoing edge; branching uses ConditionBranch or ParallelSplit. Condition edges must use sourceHandle "true" or "false". Every other edge, including every ParallelSplit edge, must set sourceHandle to null. ParallelSplit needs at least two branches. Container children use parentId and have no graph edges. Batch is coming soon and disabled, including on Devnet. Loop children execute in position order from left to right / top to bottom, then the LoopContainer continues downstream once.
+
+Query and data-flow guidance:
+- Prefer Ledger Query nodes for read-only workflows. Query-only workflows do not require a wallet.
+- For trustline holder exports, use AccountLinesQuery -> FormatTrustLines -> ExportCsv.
+- For pagination, XRPL returns marker. Put AccountLinesQuery and AccumulateItems inside a LoopContainer. AccountLinesQuery should use Marker "{{output.data.marker}}" and MarkerEndpoint "{{output.data.markerEndpoint}}". AccumulateItems should preserve marker and markerEndpoint. The LoopContainer should use LoopMode "until-condition", a bounded Iterations value, and Condition "!output.data.marker".
+- MarkerEndpoint matters because a marker from one endpoint should be continued on that same endpoint.
+- For friendly CSVs, use ExportCsv Columns like "holder=holder,balance=balance,currency=currency" or newline-separated mappings.
+- For issuer-holder snapshots, use FormatTrustLines with Perspective "issuer", AbsoluteBalances true, IncludeZeroBalances false.
+- For one-page account trustline exports, AccountLinesQuery Limit 200 is fine; for all holders, use the loop pattern above.
+- Clio-only NFT methods include NFTInfoQuery, NFTHistoryQuery, and NFTsByIssuerQuery; keep LedgerIndex as "validated" unless the user gives a specific validated ledger.
+
+Leave unknown addresses/hashes as empty strings and explain what the user must fill in. Amount config objects use {"type":"xrp","drops":"..."}, {"type":"token","currency":"USD","issuer":"","value":"..."}, or {"type":"mpt","issuanceId":"","value":"..."}. Each configJson must itself be a valid serialized JSON object. Lay nodes out left-to-right with generous spacing. Available registry: ${JSON.stringify(registryContext)}. Current workflow, which may be replaced or adapted if relevant: ${JSON.stringify(currentGraph)}.`,
         input: [...messages.slice(-6).map(message => ({ role: message.role, content: message.text } as const)), { role: 'user', content: userPrompt }],
         text: { format: { type: 'json_schema', name: 'xrpl_workflow', strict: true, schema: RESPONSE_SCHEMA } },
       }, { signal: controller.signal });

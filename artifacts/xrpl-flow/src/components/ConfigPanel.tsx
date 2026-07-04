@@ -8,7 +8,7 @@ import { buildValidatedTransaction, getTransactionAdapter } from '@/lib/transact
 const STRUCTURED_FIELD_NAMES = new Set([
   'AcceptedCredentials', 'AuthAccounts', 'AuthorizeCredentials', 'CredentialIDs',
   'Memos', 'NFTokenOffers', 'Paths', 'Permissions', 'PriceDataSeries',
-  'SignerEntries', 'UnauthorizeCredentials',
+  'RequestJson', 'SignerEntries', 'UnauthorizeCredentials',
 ]);
 
 function StructuredJsonInput({ field, value, onChange, className }: { field: FieldDef; value: unknown; onChange: (value: string) => void; className: string }) {

@@ -1,9 +1,12 @@
 import * as XRPL from 'xrpl';
 import { Node, Edge } from '@xyflow/react';
-import { WalletInfo, LogEntry, NetworkType } from '@/store/workflowStore';
+import { WalletInfo, LogEntry } from '@/store/workflowStore';
+import type { NetworkType } from '@/lib/xrplClient';
 import { getNodeDef } from '@/lib/nodeRegistry';
 import { buildValidatedTransaction, getTransactionAdapter } from '@/lib/transactionAdapters';
 import { evaluateSafeExpression } from '@/lib/safeExpression';
+import { resolveWorkflowBindings, resolveWorkflowString } from '@/lib/dataBinding';
+import { executeQueryNode, QUERY_NODE_TYPES, resetQueryNodeRuntime } from '@/lib/queryNodes';
 
 export type ExecutionCallbacks = {
   setNodeStatus: (id: string, status: 'idle'|'running'|'success'|'failed', error?: string) => void;
@@ -51,6 +54,14 @@ export function validateWorkflow(nodes: Node[]): ValidationError[] {
   }
 
   for (const node of nodes) {
+    if (node.type === 'BatchContainer') {
+      errors.push({
+        nodeId: node.id,
+        nodeLabel: getNodeLabel(node),
+        fieldLabel: 'Batch is coming soon and disabled, including on Devnet',
+      });
+      continue;
+    }
     if (NON_TX_TYPES.has(node.type as string)) continue;
     const def = getNodeDef(node.type as string);
     if (!def) {
@@ -379,6 +390,7 @@ const NON_TX_TYPES = new Set([
   'ManualTrigger', 'AccountEventTrigger',
   'ConditionBranch', 'ParallelSplit', 'SyncJoin',
   'LoopContainer', 'Delay', 'LogOutput', 'BatchContainer',
+  ...QUERY_NODE_TYPES,
 ]);
 
 function getNodeLabel(node: Node): string {
@@ -413,9 +425,10 @@ function evalCondition(expr: string, output: any): boolean {
 function buildTx(
   node: Node,
   fallbackWallet: WalletInfo,
+  runtimeOutput: any,
   innerBatch = false,
 ): Record<string, any> {
-  return buildValidatedTransaction(node.type as string, getConfig(node), fallbackWallet.address, innerBatch) as Record<string, any>;
+  return buildValidatedTransaction(node.type as string, resolveWorkflowBindings(getConfig(node), runtimeOutput), fallbackWallet.address, innerBatch) as Record<string, any>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -578,7 +591,7 @@ async function executeBatch(
   }
 
   const rawTransactions = innerNodes.map(n => ({
-    RawTransaction: buildTx(n, activeWallet, true),
+    RawTransaction: buildTx(n, activeWallet, {}, true),
   }));
 
   const { walletInfo, xrplWallet } = resolveSigningWallet(undefined, allWallets, activeWallet);
@@ -774,11 +787,26 @@ async function executeNode(
 
     if (type === 'LogOutput') {
       const msg = cfg.Message
-        ? cfg.Message
+        ? String(resolveWorkflowString(String(cfg.Message), prevOutput))
         : (typeof prevOutput === 'object' ? JSON.stringify(prevOutput, null, 2) : String(prevOutput));
       cbs.setNodeStatus(node.id, 'success');
       cbs.addLogEntry({ nodeId: node.id, nodeLabel: label, message: msg, status: 'success' });
       return { output: prevOutput };
+    }
+
+    // ── Query / data utility nodes ───────────────────────────────────────
+    if (QUERY_NODE_TYPES.has(type)) {
+      const output = await executeQueryNode(type, cfg, prevOutput, cbs.network, client, signal, node.id);
+      cbs.setNodeStatus(node.id, 'success');
+      const countNote = typeof output.meta.count === 'number' ? ` · ${output.meta.count} item${output.meta.count === 1 ? '' : 's'}` : '';
+      const endpointNote = output.meta.endpoint ? ` via ${output.meta.endpoint}` : '';
+      cbs.addLogEntry({
+        nodeId: node.id,
+        nodeLabel: label,
+        message: `Query ${output.meta.command} complete${countNote}${endpointNote}`,
+        status: 'success',
+      });
+      return { output };
     }
 
     // ── BatchContainer ─────────────────────────────────────────────────────
@@ -815,7 +843,7 @@ async function executeNode(
     const counterpartyInfo = signingConfig?.counterpartyWalletId ? allWallets.find(item => item.id === signingConfig.counterpartyWalletId) : undefined;
     const counterpartyWallet = counterpartyInfo?.seed ? XRPL.Wallet.fromSeed(counterpartyInfo.seed) : undefined;
 
-    const tx = buildTx(node, walletInfo, false);
+    const tx = buildTx(node, walletInfo, prevOutput, false);
 
     // Log which wallet is signing (helpful for multi-wallet debugging)
     const signerNote = isMultisign
@@ -893,6 +921,7 @@ export async function runWorkflow(
     throw new Error(`Workflow validation failed: ${validationErrors.map(error => `${error.nodeLabel} — ${error.fieldLabel}`).join('; ')}`);
   }
   await preflightNetworkGating(nodes, cbs.network, client);
+  resetQueryNodeRuntime();
 
   // Ensure allWallets contains at least the active wallet
   const walletList = allWallets.length > 0

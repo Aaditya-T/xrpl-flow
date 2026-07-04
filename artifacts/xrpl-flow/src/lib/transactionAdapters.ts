@@ -105,6 +105,8 @@ function composeFlags(type: string, config: TransactionConfig, innerBatch: boole
     AccountSet: [['tfRequireDestTag', 'tfOptionalDestTag'], ['tfRequireAuth', 'tfOptionalAuth'], ['tfDisallowXRP', 'tfAllowXRP']],
     TrustSet: [['tfSetNoRipple', 'tfClearNoRipple'], ['tfSetFreeze', 'tfClearFreeze']],
     OfferCreate: [['tfImmediateOrCancel', 'tfFillOrKill']],
+    AMMDeposit: [['tfLPToken', 'tfSingleAsset', 'tfTwoAsset', 'tfOneAssetLPToken', 'tfLimitLPToken', 'tfTwoAssetIfEmpty']],
+    AMMWithdraw: [['tfLPToken', 'tfWithdrawAll', 'tfOneAssetWithdrawAll', 'tfSingleAsset', 'tfTwoAsset', 'tfOneAssetLPToken', 'tfLimitLPToken']],
     MPTokenIssuanceSet: [['tfMPTLock', 'tfMPTUnlock']],
     LoanManage: [['tfLoanDefault', 'tfLoanImpair', 'tfLoanUnimpair']],
   };

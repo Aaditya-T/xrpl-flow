@@ -12,7 +12,7 @@ import {
   Node,
   SelectionMode,
 } from '@xyflow/react';
-import { MousePointer2, Trash2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, MousePointer2, Trash2 } from 'lucide-react';
 import '@xyflow/react/dist/style.css';
 
 import { useWorkflowStore } from '@/store/workflowStore';
@@ -67,6 +67,8 @@ function Canvas() {
   const { screenToFlowPosition, deleteElements } = useReactFlow();
   const [showLog, setShowLog] = useState(false);
   const [rightTab, setRightTab] = useState<'config' | 'wallets'>('wallets');
+  const [leftCollapsed, setLeftCollapsed] = useState(() => localStorage.getItem('xrplFlow_leftSidebarCollapsed') === 'true');
+  const [rightCollapsed, setRightCollapsed] = useState(() => localStorage.getItem('xrplFlow_rightSidebarCollapsed') === 'true');
   const [isConnecting, setIsConnecting] = useState(false);
 
   const {
@@ -99,6 +101,14 @@ function Canvas() {
     return () => window.clearTimeout(timer);
   }, [dirty, nodes, edges, saveWorkflow]);
 
+  useEffect(() => {
+    localStorage.setItem('xrplFlow_leftSidebarCollapsed', String(leftCollapsed));
+  }, [leftCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem('xrplFlow_rightSidebarCollapsed', String(rightCollapsed));
+  }, [rightCollapsed]);
+
   // Global keyboard shortcuts: Cmd/Ctrl+S → save, Cmd/Ctrl+Z → undo
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -124,6 +134,7 @@ function Canvas() {
   const handleNodeClick = useCallback((_: React.MouseEvent, node: any) => {
     setSelectedNodeId(node.id);
     setRightTab('config');
+    setRightCollapsed(false);
   }, [setSelectedNodeId]);
 
   const handlePaneClick = useCallback(() => {
@@ -190,8 +201,38 @@ function Canvas() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* Left: Node Palette */}
-        <div className="w-[240px] flex-shrink-0 overflow-hidden">
-          <NodePalette />
+        <div className={`${leftCollapsed ? 'w-8' : 'w-[240px]'} flex-shrink-0 overflow-hidden border-r border-[#1e2130] bg-[#0e1018] transition-[width] duration-200`}>
+          {leftCollapsed ? (
+            <button
+              type="button"
+              onClick={() => setLeftCollapsed(false)}
+              className="flex h-full w-full items-start justify-center pt-3 text-slate-500 transition-colors hover:bg-[#151a24] hover:text-blue-300"
+              title="Expand node palette"
+              aria-label="Expand node palette"
+              data-testid="expand-left-sidebar"
+            >
+              <ChevronRight size={15} />
+            </button>
+          ) : (
+            <div className="flex h-full flex-col">
+              <div className="flex items-center justify-between border-b border-[#1e2130] px-3 py-2">
+                <span className="text-[10px] font-mono uppercase tracking-widest text-slate-500">Palette</span>
+                <button
+                  type="button"
+                  onClick={() => setLeftCollapsed(true)}
+                  className="rounded p-1 text-slate-600 transition-colors hover:bg-white/5 hover:text-slate-300"
+                  title="Collapse node palette"
+                  aria-label="Collapse node palette"
+                  data-testid="collapse-left-sidebar"
+                >
+                  <ChevronLeft size={13} />
+                </button>
+              </div>
+              <div className="min-h-0 flex-1">
+                <NodePalette />
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Center: Canvas */}
@@ -267,26 +308,51 @@ function Canvas() {
         </div>
 
         {/* Right: Config / Wallet panel */}
-        <div className="w-[280px] flex-shrink-0 flex flex-col border-l border-[#1e2130] bg-[#0e1018]">
-          <div className="flex border-b border-[#1e2130] flex-shrink-0">
+        <div className={`${rightCollapsed ? 'w-8' : 'w-[280px]'} flex-shrink-0 flex flex-col border-l border-[#1e2130] bg-[#0e1018] transition-[width] duration-200`}>
+          {rightCollapsed ? (
             <button
-              onClick={() => setRightTab('config')}
-              className={`flex-1 py-1.5 text-[10px] font-mono uppercase tracking-wider transition-colors ${rightTab === 'config' ? 'text-blue-400 border-b-2 border-blue-500' : 'text-slate-500 hover:text-slate-300'}`}
-              data-testid="tab-config"
+              type="button"
+              onClick={() => setRightCollapsed(false)}
+              className="flex h-full w-full items-start justify-center pt-3 text-slate-500 transition-colors hover:bg-[#151a24] hover:text-blue-300"
+              title="Expand config and wallet panel"
+              aria-label="Expand config and wallet panel"
+              data-testid="expand-right-sidebar"
             >
-              Config
+              <ChevronLeft size={15} />
             </button>
-            <button
-              onClick={() => setRightTab('wallets')}
-              className={`flex-1 py-1.5 text-[10px] font-mono uppercase tracking-wider transition-colors ${rightTab === 'wallets' ? 'text-blue-400 border-b-2 border-blue-500' : 'text-slate-500 hover:text-slate-300'}`}
-              data-testid="tab-wallets"
-            >
-              Wallets
-            </button>
-          </div>
-          <div className="flex-1 overflow-hidden">
-            {rightTab === 'config' ? <ConfigPanel /> : <WalletPanel />}
-          </div>
+          ) : (
+            <>
+              <div className="flex border-b border-[#1e2130] flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setRightCollapsed(true)}
+                  className="border-r border-[#1e2130] px-2 text-slate-600 transition-colors hover:bg-white/5 hover:text-slate-300"
+                  title="Collapse right panel"
+                  aria-label="Collapse right panel"
+                  data-testid="collapse-right-sidebar"
+                >
+                  <ChevronRight size={13} />
+                </button>
+                <button
+                  onClick={() => setRightTab('config')}
+                  className={`flex-1 py-1.5 text-[10px] font-mono uppercase tracking-wider transition-colors ${rightTab === 'config' ? 'text-blue-400 border-b-2 border-blue-500' : 'text-slate-500 hover:text-slate-300'}`}
+                  data-testid="tab-config"
+                >
+                  Config
+                </button>
+                <button
+                  onClick={() => setRightTab('wallets')}
+                  className={`flex-1 py-1.5 text-[10px] font-mono uppercase tracking-wider transition-colors ${rightTab === 'wallets' ? 'text-blue-400 border-b-2 border-blue-500' : 'text-slate-500 hover:text-slate-300'}`}
+                  data-testid="tab-wallets"
+                >
+                  Wallets
+                </button>
+              </div>
+              <div className="flex-1 overflow-hidden">
+                {rightTab === 'config' ? <ConfigPanel /> : <WalletPanel />}
+              </div>
+            </>
+          )}
         </div>
       </div>
 

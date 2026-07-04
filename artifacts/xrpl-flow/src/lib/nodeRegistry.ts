@@ -31,6 +31,8 @@ export const CATEGORIES: Record<string, { name: string; color: string }> = {
   PERMISSIONED_DOMAINS: { name: 'Permissioned Domains',  color: '#14b8a6' },
   DIDS:                 { name: 'DIDs',                  color: '#ec4899' },
   PRICE_ORACLES:        { name: 'Price Oracles',         color: '#eab308' },
+  QUERIES:              { name: 'Ledger Queries',        color: '#38bdf8' },
+  DATA:                 { name: 'Data Utilities',        color: '#a78bfa' },
   NFTS:                 { name: 'NFTs',                  color: '#f43f5e' },
   CHECKS:               { name: 'Checks',                color: '#0ea5e9' },
   VAULTS:               { name: 'Vaults',                color: '#84cc16' },
@@ -101,6 +103,197 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
       txt ('EventType', 'Filter: Transaction Type', false,
            'Leave blank for any. e.g. Payment, OfferCreate'),
       num ('TimeoutSeconds', 'Timeout (seconds)', false),
+    ],
+  },
+
+  // ── Ledger Queries ──────────────────────────────────────────────────────
+  {
+    id: 'AccountInfoQuery', label: 'Account Info Query',
+    category: 'Ledger Queries', color: CATEGORIES.QUERIES.color,
+    networkGating: 'all', description: 'Read account balance, sequence, flags, and signer lists.',
+    fields: [
+      addr('Account', 'Account'),
+      txt('LedgerIndex', 'Ledger Index', false, 'validated, closed, current, or a ledger number'),
+      bool('SignerLists', 'Include Signer Lists'),
+      bool('Queue', 'Include Queue'),
+    ],
+  },
+  {
+    id: 'AccountLinesQuery', label: 'Trust Lines Query',
+    category: 'Ledger Queries', color: CATEGORIES.QUERIES.color,
+    networkGating: 'all', description: 'Read issued-token trust lines for an account.',
+    fields: [
+      addr('Account', 'Account'),
+      addr('Peer', 'Peer / issuer filter', false),
+      num('Limit', 'Limit'),
+      txt('Marker', 'Marker', false, 'For pagination. Bind {{output.data.marker}} inside loops.'),
+      txt('MarkerEndpoint', 'Marker Endpoint', false, 'For pagination. Bind {{output.data.markerEndpoint}} so marker stays on the same endpoint.'),
+      txt('LedgerIndex', 'Ledger Index', false, 'Default: validated'),
+    ],
+  },
+  {
+    id: 'AccountTxQuery', label: 'Account Tx History',
+    category: 'Ledger Queries', color: CATEGORIES.QUERIES.color,
+    networkGating: 'all', description: 'Read validated transaction history for an account; prefers Clio/full-history.',
+    fields: [
+      addr('Account', 'Account'),
+      num('LedgerIndexMin', 'Ledger Index Min (-1 for earliest)'),
+      num('LedgerIndexMax', 'Ledger Index Max (-1 for latest)'),
+      num('Limit', 'Limit'),
+      txt('Marker', 'Marker', false, 'For pagination. Bind {{output.data.marker}} inside loops.'),
+      txt('MarkerEndpoint', 'Marker Endpoint', false, 'For pagination. Bind {{output.data.markerEndpoint}} so marker stays on the same endpoint.'),
+      bool('Forward', 'Oldest first'),
+    ],
+  },
+  {
+    id: 'AccountObjectsQuery', label: 'Account Objects Query',
+    category: 'Ledger Queries', color: CATEGORIES.QUERIES.color,
+    networkGating: 'all', description: 'Read objects owned by an account such as offers, escrows, checks, NFTs, and tickets.',
+    fields: [
+      addr('Account', 'Account'),
+      {
+        name: 'ObjectType', label: 'Object Type', type: 'select', required: false,
+        options: ['check', 'deposit_preauth', 'escrow', 'nft_offer', 'offer', 'payment_channel', 'signer_list', 'ticket', 'trustline'],
+      },
+      bool('DeletionBlockersOnly', 'Deletion blockers only'),
+      num('Limit', 'Limit'),
+      txt('Marker', 'Marker', false, 'For pagination. Bind {{output.data.marker}} inside loops.'),
+      txt('MarkerEndpoint', 'Marker Endpoint', false, 'For pagination. Bind {{output.data.markerEndpoint}} so marker stays on the same endpoint.'),
+      txt('LedgerIndex', 'Ledger Index', false, 'Default: validated'),
+    ],
+  },
+  {
+    id: 'LedgerQuery', label: 'Ledger Query',
+    category: 'Ledger Queries', color: CATEGORIES.QUERIES.color,
+    networkGating: 'all', description: 'Read a ledger header, transactions, or state.',
+    fields: [
+      txt('LedgerIndex', 'Ledger Index', false, 'validated, closed, current, or a ledger number'),
+      bool('IncludeTransactions', 'Include Transactions'),
+      bool('IncludeState', 'Include State'),
+      bool('Expand', 'Expand Results'),
+    ],
+  },
+  {
+    id: 'TxQuery', label: 'Transaction Query',
+    category: 'Ledger Queries', color: CATEGORIES.QUERIES.color,
+    networkGating: 'all', description: 'Read a validated transaction by hash; useful after submissions or imports.',
+    fields: [
+      hex('TransactionHash', 'Transaction Hash', true),
+    ],
+  },
+  {
+    id: 'NFTInfoQuery', label: 'NFT Info Query (Clio)',
+    category: 'Ledger Queries', color: CATEGORIES.QUERIES.color,
+    networkGating: 'all', description: 'Read NFT metadata using Clio-only nft_info.',
+    fields: [
+      hex('NFTokenID', 'NFToken ID', true),
+      txt('LedgerIndex', 'Ledger Index', false, 'Use validated or a validated ledger number'),
+    ],
+  },
+  {
+    id: 'NFTHistoryQuery', label: 'NFT History Query (Clio)',
+    category: 'Ledger Queries', color: CATEGORIES.QUERIES.color,
+    networkGating: 'all', description: 'Read NFT ownership/offer history using Clio-only nft_history.',
+    fields: [
+      hex('NFTokenID', 'NFToken ID', true),
+      num('Limit', 'Limit'),
+      txt('Marker', 'Marker', false, 'For pagination. Bind {{output.data.marker}} inside loops.'),
+      txt('MarkerEndpoint', 'Marker Endpoint', false, 'For pagination. Bind {{output.data.markerEndpoint}} so marker stays on the same endpoint.'),
+      txt('LedgerIndex', 'Ledger Index', false, 'Use validated or a validated ledger number'),
+    ],
+  },
+  {
+    id: 'NFTsByIssuerQuery', label: 'NFTs By Issuer (Clio)',
+    category: 'Ledger Queries', color: CATEGORIES.QUERIES.color,
+    networkGating: 'all', description: 'Read NFTs minted by an issuer using Clio-only nfts_by_issuer.',
+    fields: [
+      addr('Issuer', 'Issuer'),
+      num('Limit', 'Limit'),
+      txt('Marker', 'Marker', false, 'For pagination. Bind {{output.data.marker}} inside loops.'),
+      txt('MarkerEndpoint', 'Marker Endpoint', false, 'For pagination. Bind {{output.data.markerEndpoint}} so marker stays on the same endpoint.'),
+      txt('LedgerIndex', 'Ledger Index', false, 'Use validated or a validated ledger number'),
+    ],
+  },
+  {
+    id: 'RawLedgerQuery', label: 'Raw Ledger Query',
+    category: 'Ledger Queries', color: CATEGORIES.QUERIES.color,
+    networkGating: 'all', description: 'Power-user query for any public XRPL API command.',
+    fields: [
+      ta('RequestJson', 'Request JSON', true, '{"command":"account_info","account":"r...","ledger_index":"validated"}'),
+      bool('PreferClio', 'Prefer Clio'),
+      bool('ClioOnly', 'Clio only'),
+    ],
+  },
+
+  // ── Data Utilities ──────────────────────────────────────────────────────
+  {
+    id: 'PickOutput', label: 'Pick Output Path',
+    category: 'Data Utilities', color: CATEGORIES.DATA.color,
+    networkGating: 'all', description: 'Select a nested value from the previous node output.',
+    fields: [
+      txt('Path', 'Path', true, 'e.g. data.account_data.Balance or items.0.tx.hash'),
+    ],
+  },
+  {
+    id: 'FilterItems', label: 'Filter Items',
+    category: 'Data Utilities', color: CATEGORIES.DATA.color,
+    networkGating: 'all', description: 'Filter previous output.items by a simple field comparison.',
+    fields: [
+      txt('SourcePath', 'Source Path', false, 'Default: items'),
+      txt('FieldPath', 'Field Path', false, 'e.g. tx.TransactionType'),
+      {
+        name: 'Operator', label: 'Operator', type: 'select', required: true,
+        defaultValue: 'exists',
+        options: ['exists', 'equals', 'not-equals', 'contains', 'gt', 'gte', 'lt', 'lte'],
+      },
+      txt('Value', 'Value', false, 'Comparison value'),
+    ],
+  },
+  {
+    id: 'DedupeItems', label: 'Dedupe Items',
+    category: 'Data Utilities', color: CATEGORIES.DATA.color,
+    networkGating: 'all', description: 'Remove duplicate items using a field path.',
+    fields: [
+      txt('SourcePath', 'Source Path', false, 'Default: items'),
+      txt('FieldPath', 'Unique Field Path', true, 'e.g. tx.Account or account'),
+    ],
+  },
+  {
+    id: 'AccumulateItems', label: 'Accumulate Items',
+    category: 'Data Utilities', color: CATEGORIES.DATA.color,
+    networkGating: 'all', description: 'Collect paginated results across loop iterations and preserve the next marker.',
+    fields: [
+      txt('AccumulatorKey', 'Accumulator Key', false, 'Optional; use when multiple accumulators share a loop'),
+      txt('PageItemsPath', 'Page Items Path', false, 'Default: items'),
+      txt('MarkerPath', 'Marker Path', false, 'Default: data.marker'),
+      txt('MarkerEndpointPath', 'Marker Endpoint Path', false, 'Default: data.markerEndpoint'),
+    ],
+  },
+  {
+    id: 'FormatTrustLines', label: 'Format Trust Lines',
+    category: 'Data Utilities', color: CATEGORIES.DATA.color,
+    networkGating: 'all', description: 'Turn trustline rows into friendly holder/balance/currency objects.',
+    fields: [
+      txt('SourcePath', 'Source Path', false, 'Default: items'),
+      {
+        name: 'Perspective', label: 'Perspective', type: 'select', required: true,
+        defaultValue: 'issuer',
+        options: ['issuer', 'account'],
+        description: 'issuer makes balances positive for holder exports; account preserves account perspective',
+      },
+      { name: 'AbsoluteBalances', label: 'Absolute Balances', type: 'boolean', required: false, defaultValue: true },
+      bool('IncludeZeroBalances', 'Include Zero Balances'),
+    ],
+  },
+  {
+    id: 'ExportCsv', label: 'Export CSV',
+    category: 'Data Utilities', color: CATEGORIES.DATA.color,
+    networkGating: 'all', description: 'Download previous items as a CSV with user-defined columns.',
+    fields: [
+      txt('SourcePath', 'Source Path', false, 'Default: items'),
+      txt('FileName', 'File Name', false, 'holders.csv'),
+      ta('Columns', 'Columns', false, 'holder=holder,balance=balance,currency=currency\nor one column per line'),
+      { name: 'Download', label: 'Download File', type: 'boolean', required: false, defaultValue: true },
     ],
   },
 
@@ -923,12 +1116,12 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     ]),
   },
 
-  // ── Batch (devnet-only) ──────────────────────────────────────────────────
+  // ── Batch (coming soon) ──────────────────────────────────────────────────
   {
     id: 'BatchContainer', label: 'Batch Container',
     category: 'Batch', color: CATEGORIES.BATCH.color,
     networkGating: 'devnet-only',
-    description: 'Group up to 8 inner tx nodes atomically (drop them inside this container).',
+    description: 'Coming soon — Batch is not live yet, including on Devnet.',
     fields: [
       {
         name: 'ExecutionMode', label: 'Execution Mode', type: 'select', required: true,
@@ -1019,5 +1212,5 @@ export const getCategoryNodes = (category: string): NodeTypeDef[] =>
 export const CATEGORY_ORDER = [
   'Triggers', 'Account Management', 'Payments & Channels', 'DEX / Offers',
   'AMM', 'MPTs', 'Credentials', 'Permissioned Domains', 'DIDs', 'Price Oracles',
-  'NFTs', 'Checks', 'Vaults', 'Lending Protocol', 'Batch', 'Control Flow', 'Output',
+  'Ledger Queries', 'Data Utilities', 'NFTs', 'Checks', 'Vaults', 'Lending Protocol', 'Batch', 'Control Flow', 'Output',
 ];

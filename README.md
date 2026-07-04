@@ -1,4 +1,13 @@
-# XRPL Flow v2
+<p align="center">
+  <img src="./logo.png" alt="XRPL Flow logo" width="120" />
+</p>
+
+<h1 align="center">XRPL Flow v2</h1>
+
+<p align="center">
+  <a href="https://github.com/aaditya/xrplflow/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/aaditya/xrplflow/actions/workflows/ci.yml/badge.svg" /></a>
+  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" />
+</p>
 
 XRPL Flow is a browser-based, visual builder for constructing and running XRPL transaction workflows. Version 2 uses a typed adapter registry, validates every built transaction with the installed `xrpl` SDK, and treats Mainnet signing as an explicit review operation.
 
@@ -16,7 +25,20 @@ Quality checks:
 ```sh
 pnpm typecheck
 pnpm build
+pnpm test
+pnpm test:e2e
 ```
+
+The default test suite is fully offline and deterministic. Live XRPL testnet/devnet smoke tests are opt-in:
+
+```sh
+XRPL_SMOKE_NETWORK=testnet \
+XRPL_SMOKE_SEED=s... \
+XRPL_SMOKE_DESTINATION=r... \
+pnpm test:smoke:xrpl
+```
+
+See [docs/testing.md](./docs/testing.md) for the full testing policy, fixture rules, Playwright debugging, and live-network setup.
 
 ## Transaction support
 
@@ -64,6 +86,13 @@ Branching requires a Condition Branch or Parallel Split. Sync Join waits for the
 
 Condition and loop expressions use an allowlisted `jsep` grammar. They may read `output` properties and use literals, parentheses, comparison/equality, boolean operators, and unary `!`. Function calls, assignments, computed properties, constructors, and global access are rejected.
 
-## Current verification scope
+## Verification scope
 
-This phase intentionally does not introduce a test runner or live-network CI. Acceptance is based on clean locked installation, workspace typecheck/build, SDK validation in every transaction adapter, and manual Testnet/Devnet/Mainnet-dry-run and accessibility passes.
+XRPL Flow uses a layered beta test suite:
+
+- Unit and property-style tests validate transaction adapters, illegal flag combinations, workflow graph legality, walletless workflows, safe expressions, data bindings, and query utilities.
+- API tests cover health/auth, marketplace validation and publishing, batch-template rejection, and deterministic rate limits.
+- Playwright tests verify the browser shell, workflow import validation, palette search, and mocked marketplace flows.
+- Live XRPL smoke tests are documented but not run in pull-request CI. They require explicit funded testnet/devnet wallets and refuse Mainnet.
+
+Pull-request CI runs `pnpm test:ci`, which typechecks, builds, runs offline Vitest tests, and runs mocked Playwright tests.

@@ -7,12 +7,17 @@ import { cn } from '@/lib/utils';
 interface PaletteItemProps {
   def: NodeTypeDef;
   isDevnetWarning: boolean;
+  isComingSoon: boolean;
   onInsert: (def: NodeTypeDef) => void;
 }
 
-function PaletteItem({ def, isDevnetWarning, onInsert }: PaletteItemProps) {
+const isBatchNode = (def: NodeTypeDef) => def.category === 'Batch' || def.id === 'BatchContainer';
+
+function PaletteItem({ def, isDevnetWarning, isComingSoon, onInsert }: PaletteItemProps) {
+  const isDisabled = isDevnetWarning || isComingSoon;
+
   const onDragStart = (e: React.DragEvent) => {
-    if (isDevnetWarning) { e.preventDefault(); return; }
+    if (isDisabled) { e.preventDefault(); return; }
     e.dataTransfer.setData('application/reactflow/type', def.id);
     e.dataTransfer.setData('application/reactflow/label', def.label);
     e.dataTransfer.effectAllowed = 'move';
@@ -20,28 +25,29 @@ function PaletteItem({ def, isDevnetWarning, onInsert }: PaletteItemProps) {
 
   return (
     <div
-      draggable={!isDevnetWarning}
+      draggable={!isDisabled}
       onDragStart={onDragStart}
       role="button"
-      tabIndex={isDevnetWarning ? -1 : 0}
-      aria-disabled={isDevnetWarning}
-      onKeyDown={event => { if (!isDevnetWarning && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onInsert(def); } }}
+      tabIndex={isDisabled ? -1 : 0}
+      aria-disabled={isDisabled}
+      onKeyDown={event => { if (!isDisabled && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onInsert(def); } }}
       data-testid={`palette-item-${def.id}`}
       className={cn(
-        'flex items-start gap-2 px-2.5 py-2 rounded cursor-grab',
+        'relative flex items-start gap-2 px-2.5 py-2 rounded cursor-grab',
         'hover:bg-[#1e2130] transition-colors duration-100 active:cursor-grabbing',
         isDevnetWarning && 'opacity-40',
+        isComingSoon && 'cursor-not-allowed opacity-55 hover:bg-transparent',
       )}
-      title={def.description}
+      title={isComingSoon ? 'Coming soon — Batch is not live yet.' : def.description}
     >
       <div
-        className="w-2 h-2 rounded-full mt-0.5 flex-shrink-0"
+        className={cn('w-2 h-2 rounded-full mt-0.5 flex-shrink-0', isComingSoon && 'blur-[1px]')}
         style={{ backgroundColor: def.color }}
       />
-      <div className="flex-1 min-w-0">
+      <div className={cn('flex-1 min-w-0', isComingSoon && 'blur-[1px]')}>
         <div className="flex items-center gap-1">
           <span className="text-[11px] text-slate-200 font-medium truncate">{def.label}</span>
-          {def.networkGating === 'devnet-only' && (
+          {def.networkGating === 'devnet-only' && !isComingSoon && (
             <span className="text-[8px] font-mono bg-lime-900/40 text-lime-500 border border-lime-800/40 px-1 rounded flex-shrink-0">
               DEV
             </span>
@@ -49,16 +55,22 @@ function PaletteItem({ def, isDevnetWarning, onInsert }: PaletteItemProps) {
         </div>
         <p className="text-[9px] text-slate-500 truncate mt-0.5">{def.description}</p>
       </div>
+      {isComingSoon && (
+        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[8px] font-mono bg-amber-950/80 text-amber-300 border border-amber-700/50 px-1.5 py-0.5 rounded">
+          COMING SOON
+        </span>
+      )}
     </div>
   );
 }
 
 export function NodePalette() {
   const [search, setSearch] = useState('');
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(['Triggers', 'Payments & Channels', 'Control Flow']));
+  const [expanded, setExpanded] = useState<Set<string>>(new Set(['Triggers', 'Ledger Queries', 'Data Utilities', 'Payments & Channels', 'Control Flow']));
   const { network, nodes, setNodes, pushToUndoStack } = useWorkflowStore();
 
   const insertNode = (def: NodeTypeDef) => {
+    if (isBatchNode(def)) return;
     if (def.networkGating === 'devnet-only' && network !== 'devnet') return;
     pushToUndoStack();
     const index = nodes.length;
@@ -124,6 +136,7 @@ export function NodePalette() {
                 key={def.id}
                 def={def}
                 isDevnetWarning={def.networkGating === 'devnet-only' && network !== 'devnet'}
+                isComingSoon={isBatchNode(def)}
                 onInsert={insertNode}
               />
             ))}
@@ -137,6 +150,7 @@ export function NodePalette() {
             const color = nodes[0]?.color || '#6b7280';
             const devnetCount = nodes.filter(n => n.networkGating === 'devnet-only').length;
             const allDevnet = devnetCount === nodes.length;
+            const allComingSoon = nodes.every(isBatchNode);
 
             return (
               <div key={cat} className="border-b border-[#1e2130]/60">
@@ -148,8 +162,11 @@ export function NodePalette() {
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 rounded-sm flex-shrink-0" style={{ backgroundColor: color }} />
                     <span className="text-[10px] font-medium text-slate-300">{cat}</span>
-                    {allDevnet && (
+                    {allDevnet && !allComingSoon && (
                       <span className="text-[8px] font-mono text-lime-600">DEV</span>
+                    )}
+                    {allComingSoon && (
+                      <span className="text-[8px] font-mono text-amber-500">COMING SOON</span>
                     )}
                   </div>
                   <div className="flex items-center gap-1.5">
@@ -158,12 +175,13 @@ export function NodePalette() {
                   </div>
                 </button>
                 {isOpen && (
-                  <div className="pb-1">
+                  <div className={cn('pb-1', allComingSoon && 'pointer-events-none')}>
                     {nodes.map(def => (
                       <PaletteItem
                         key={def.id}
                         def={def}
                         isDevnetWarning={def.networkGating === 'devnet-only' && network !== 'devnet'}
+                        isComingSoon={isBatchNode(def)}
                         onInsert={insertNode}
                       />
                     ))}

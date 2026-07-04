@@ -1,12 +1,22 @@
-import { useState, useRef } from 'react';
-import { Play, Square, Save, Download, Upload, Pencil, Check, X, Wifi, WifiOff, Copy, Trash2, LayoutTemplate, Sparkles } from 'lucide-react';
+import { useEffect, useState, useRef } from 'react';
+import { Play, Square, Save, Download, Upload, Pencil, Check, X, Wifi, WifiOff, Copy, Trash2, LayoutTemplate, Sparkles, LogIn, UserRound } from 'lucide-react';
 import { useWorkflowStore } from '@/store/workflowStore';
-import { NETWORK_URLS, EXPLORER_URLS } from '@/lib/xrplClient';
+import {
+  EXPLORER_URLS,
+  PUBLIC_ENDPOINTS,
+  getNetworkProfile,
+  isPlainPublicEndpointUrl,
+  saveNetworkProfile,
+  type NetworkProfile,
+  type NetworkType,
+} from '@/lib/xrplClient';
 import { runWorkflow, validateWorkflowGraph } from '@/lib/workflowEngine';
 import { cn } from '@/lib/utils';
 import { getNodeDef } from '@/lib/nodeRegistry';
+import { getTransactionAdapter } from '@/lib/transactionAdapters';
 import { WORKFLOW_VERSION, type WorkflowDocumentV2 } from '@/lib/workflowTypes';
 import { connectXRPL } from '@/lib/networkConnection';
+import { beginXamanSignIn, captureMarketplaceSessionFromUrl, getMarketplaceUser, setMarketplaceSession, type MarketplaceUser } from '@/lib/marketplaceClient';
 import { WorkflowLibrary } from './WorkflowLibrary';
 import { AIWorkflowAssistant } from './AIWorkflowAssistant';
 
@@ -20,6 +30,82 @@ function XRPLLogo() {
   );
 }
 
+function AdvancedNetworkSettings({ network, onSaved }: { network: NetworkType; onSaved: () => void }) {
+  const [profile, setProfile] = useState<NetworkProfile>(() => getNetworkProfile(network));
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    setProfile(getNetworkProfile(network));
+    setError('');
+  }, [network]);
+
+  const publicEndpoints = PUBLIC_ENDPOINTS.filter(endpoint => endpoint.network === network);
+  const rippledEndpoints = publicEndpoints.filter(endpoint => endpoint.kind !== 'clio');
+  const clioEndpoints = publicEndpoints.filter(endpoint => endpoint.kind === 'clio');
+
+  const update = (patch: Partial<NetworkProfile>) => setProfile(prev => ({ ...prev, ...patch }));
+  const save = () => {
+    setError('');
+    try {
+      saveNetworkProfile(profile);
+      onSaved();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not save endpoint settings.');
+    }
+  };
+
+  const inputClass = 'w-full rounded border border-[#2e3448] bg-[#080b12] px-2 py-1 text-[10px] text-slate-200 outline-none focus:border-blue-500/60';
+
+  return (
+    <div className="absolute right-3 top-12 z-[80] w-[420px] rounded-lg border border-[#2e3448] bg-[#0b0e15] p-3 shadow-2xl">
+      <div className="mb-2 flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[12px] font-semibold text-slate-100">Network routing</p>
+          <p className="text-[9px] leading-relaxed text-slate-500">Automatic routing uses live rippled for submissions/subscriptions and Clio/full-history endpoints for validated query blocks.</p>
+        </div>
+        <button type="button" onClick={onSaved} className="rounded p-1 text-slate-500 hover:bg-white/5 hover:text-slate-200"><X size={13} /></button>
+      </div>
+
+      {network !== 'custom' ? (
+        <div className="space-y-2">
+          <label className="block text-[9px] uppercase tracking-wider text-slate-500">Primary live / submit node</label>
+          <select value={profile.primaryUrl} onChange={event => update({ primaryUrl: event.target.value })} className={inputClass}>
+            {[...rippledEndpoints, ...clioEndpoints].map(endpoint => <option key={endpoint.id} value={endpoint.url}>{endpoint.label}</option>)}
+          </select>
+          <label className="block text-[9px] uppercase tracking-wider text-slate-500">Fallback node</label>
+          <select value={profile.fallbackUrls[0] || ''} onChange={event => update({ fallbackUrls: event.target.value ? [event.target.value] : [] })} className={inputClass}>
+            <option value="">Automatic defaults</option>
+            {publicEndpoints.filter(endpoint => endpoint.url !== profile.primaryUrl).map(endpoint => <option key={endpoint.id} value={endpoint.url}>{endpoint.label}</option>)}
+          </select>
+          <label className="block text-[9px] uppercase tracking-wider text-slate-500">Historical / Clio query node</label>
+          <select value={profile.clioUrls[0] || ''} onChange={event => update({ clioUrls: event.target.value ? [event.target.value] : [] })} className={inputClass}>
+            <option value="">Automatic if available</option>
+            {clioEndpoints.map(endpoint => <option key={endpoint.id} value={endpoint.url}>{endpoint.label}</option>)}
+          </select>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <label className="block text-[9px] uppercase tracking-wider text-slate-500">Custom primary URL</label>
+          <input value={profile.primaryUrl} onChange={event => update({ primaryUrl: event.target.value })} placeholder="wss://your-rippled.example.com/" className={inputClass} />
+          <label className="block text-[9px] uppercase tracking-wider text-slate-500">Custom fallback URL</label>
+          <input value={profile.fallbackUrls[0] || ''} onChange={event => update({ fallbackUrls: event.target.value ? [event.target.value] : [] })} placeholder="wss://fallback.example.com/" className={inputClass} />
+          <label className="block text-[9px] uppercase tracking-wider text-slate-500">Custom Clio URL for history queries</label>
+          <input value={profile.clioUrls[0] || ''} onChange={event => update({ clioUrls: event.target.value ? [event.target.value] : [] })} placeholder="wss://your-clio.example.com/" className={inputClass} />
+        </div>
+      )}
+
+      <div className="mt-3 rounded border border-blue-900/40 bg-blue-950/20 p-2 text-[9px] leading-relaxed text-blue-200/80">
+        Public servers can rate-limit or disappear. For production/hosted runs, use your own rippled/Clio node or a managed provider. Authenticated/commercial URLs are intentionally not stored here yet.
+      </div>
+      {error && <p className="mt-2 text-[9px] text-red-400">{error}</p>}
+      <div className="mt-3 flex items-center justify-between">
+        <span className={`text-[9px] ${isPlainPublicEndpointUrl(profile.primaryUrl) ? 'text-emerald-400' : 'text-amber-400'}`}>{isPlainPublicEndpointUrl(profile.primaryUrl) ? 'Primary URL looks valid' : 'Primary plain URL required'}</span>
+        <button type="button" onClick={save} className="rounded bg-blue-600 px-3 py-1.5 text-[10px] font-medium text-white hover:bg-blue-500">Save routing</button>
+      </div>
+    </div>
+  );
+}
+
 export function Header({ onToggleLog }: { onToggleLog: () => void }) {
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState('');
@@ -28,7 +114,11 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
   const [importError, setImportError] = useState('');
   const [showWorkflowLibrary, setShowWorkflowLibrary] = useState(false);
   const [showAIAssistant, setShowAIAssistant] = useState(false);
+  const [showNetworkSettings, setShowNetworkSettings] = useState(false);
   const [validationErrors, setValidationErrors] = useState<{ nodeLabel: string; fieldLabel: string }[]>([]);
+  const [marketplaceUser, setMarketplaceUser] = useState<MarketplaceUser | null>(null);
+  const [marketplaceAuthError, setMarketplaceAuthError] = useState('');
+  const [marketplaceAuthBusy, setMarketplaceAuthBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -42,7 +132,15 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
 
   const activeWallet = wallets.find(w => w.id === activeWalletId);
   const hasTrigger = nodes.some(n => n.type === 'ManualTrigger' || n.type === 'AccountEventTrigger');
-  const canRun = connectionStatus === 'connected' && hasTrigger && !!activeWallet;
+  const hasTransactionNodes = nodes.some(node => Boolean(getTransactionAdapter(node.type as string)));
+  const canRun = connectionStatus === 'connected' && hasTrigger && (!hasTransactionNodes || !!activeWallet);
+
+  useEffect(() => {
+    captureMarketplaceSessionFromUrl();
+    getMarketplaceUser()
+      .then(user => setMarketplaceUser(user))
+      .catch(() => setMarketplaceUser(null));
+  }, []);
 
   const startEditName = () => {
     setNameInput(currentWorkflowName);
@@ -56,6 +154,24 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
 
   const handleSave = () => {
     saveWorkflow();
+  };
+
+  const connectXaman = async () => {
+    setMarketplaceAuthBusy(true);
+    setMarketplaceAuthError('');
+    try {
+      await beginXamanSignIn();
+    } catch (error) {
+      setMarketplaceAuthError(error instanceof Error ? error.message : 'Could not start Xaman sign-in.');
+    } finally {
+      setMarketplaceAuthBusy(false);
+    }
+  };
+
+  const disconnectXaman = () => {
+    setMarketplaceSession('');
+    setMarketplaceUser(null);
+    setMarketplaceAuthError('');
   };
 
   const handleExport = () => {
@@ -127,8 +243,8 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
   };
 
   const handleRun = async () => {
-    if (!canRun || !xrplClient || !activeWallet?.seed) {
-      setRunError(!activeWallet?.seed ? 'Active wallet has no seed (import or generate a wallet)' : 'Connect to XRPL first');
+    if (!canRun || !xrplClient || (hasTransactionNodes && !activeWallet?.seed)) {
+      setRunError(hasTransactionNodes && !activeWallet?.seed ? 'Active wallet has no seed (import or generate a wallet)' : 'Connect to XRPL first');
       setTimeout(() => setRunError(''), 4000);
       return;
     }
@@ -147,10 +263,16 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
     setRunning(true);
     setRunError('');
     resetNodeStatuses();
+    const runtimeWallet = activeWallet || {
+      id: 'readonly',
+      name: 'Read-only',
+      address: 'rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh',
+      publicKey: '',
+    };
     try {
       await runWorkflow(
-        nodes, edges, xrplClient, activeWallet,
-        activeWallet.seed,
+        nodes, edges, xrplClient, runtimeWallet,
+        activeWallet?.seed || '',
         {
           setNodeStatus,
           addLogEntry,
@@ -188,6 +310,10 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
     connected: '#10b981',
     error: '#ef4444',
   }[connectionStatus];
+  const activeProfile = getNetworkProfile(network);
+  const xamanLabel = marketplaceUser?.address
+    ? `${marketplaceUser.address.slice(0, 6)}…${marketplaceUser.address.slice(-4)}`
+    : 'Connect Xaman';
 
   return (
     <header className="flex items-center gap-2 px-3 h-11 bg-[#0e1018] border-b border-[#1e2130] flex-shrink-0" data-testid="header">
@@ -269,7 +395,15 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
       </button>
       <input ref={fileInputRef} type="file" accept=".json" onChange={handleImportFile} className="hidden" />
 
-      <WorkflowLibrary open={showWorkflowLibrary} onClose={() => setShowWorkflowLibrary(false)} onImport={() => fileInputRef.current?.click()} />
+      <WorkflowLibrary
+        open={showWorkflowLibrary}
+        onClose={() => setShowWorkflowLibrary(false)}
+        onImport={() => fileInputRef.current?.click()}
+        marketplaceUser={marketplaceUser}
+        marketplaceAuthError={marketplaceAuthError}
+        onRequestXamanSignIn={connectXaman}
+        onSignOutXaman={disconnectXaman}
+      />
       <AIWorkflowAssistant open={showAIAssistant} onClose={() => setShowAIAssistant(false)} />
 
       {/* Spacer */}
@@ -304,6 +438,33 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
       {importError && (
         <button type="button" onClick={() => setImportError('')} title={importError} className="text-[10px] text-red-400 font-mono truncate max-w-[280px]">{importError}</button>
       )}
+      {marketplaceAuthError && (
+        <button type="button" onClick={() => setMarketplaceAuthError('')} title={marketplaceAuthError} className="text-[10px] text-red-400 font-mono truncate max-w-[320px]">{marketplaceAuthError}</button>
+      )}
+
+      {/* Xaman account */}
+      {marketplaceUser ? (
+        <button
+          type="button"
+          onClick={disconnectXaman}
+          title={`Connected with Xaman as ${marketplaceUser.address}. Click to disconnect.`}
+          className="flex items-center gap-1.5 rounded border border-violet-700/50 bg-violet-950/30 px-2 py-1 text-[10px] text-violet-200 transition-colors hover:border-violet-500/70 hover:bg-violet-900/40"
+        >
+          <UserRound size={11} />
+          {marketplaceUser.displayName && marketplaceUser.displayName !== marketplaceUser.address ? marketplaceUser.displayName : xamanLabel}
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={connectXaman}
+          disabled={marketplaceAuthBusy}
+          data-testid="connect-xaman"
+          className="flex items-center gap-1.5 rounded bg-violet-600 px-2.5 py-1 text-[10px] font-medium text-white transition-colors hover:bg-violet-500 disabled:opacity-60"
+        >
+          <LogIn size={11} />
+          {marketplaceAuthBusy ? 'Connecting…' : 'Connect Xaman'}
+        </button>
+      )}
 
       {/* Log toggle */}
       <button
@@ -325,13 +486,16 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
         <option value="mainnet">Mainnet</option>
         <option value="testnet">Testnet</option>
         <option value="devnet">Devnet</option>
+        <option value="custom">Custom</option>
       </select>
+      <button type="button" onClick={() => setShowNetworkSettings(value => !value)} className="rounded border border-[#2e3448] bg-[#1e2130] px-2 py-1 text-[10px] text-slate-400 hover:bg-[#252b3b] hover:text-slate-200">Advanced</button>
+      {showNetworkSettings && <AdvancedNetworkSettings network={network} onSaved={() => setShowNetworkSettings(false)} />}
 
       {/* Connection status */}
       <div
         className="flex items-center gap-1 px-2 py-1 bg-[#1e2130] border border-[#2e3448] rounded cursor-pointer"
         data-testid="connection-status"
-        title={`${connectionStatus} — ${NETWORK_URLS[network]}`}
+        title={`${connectionStatus} — ${activeProfile.primaryUrl || 'no endpoint configured'}`}
       >
         {connectionStatus === 'connected'
           ? <Wifi size={11} style={{ color: statusColor }} />
