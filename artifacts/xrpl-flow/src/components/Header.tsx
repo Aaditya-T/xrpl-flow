@@ -22,11 +22,7 @@ import { AIWorkflowAssistant } from './AIWorkflowAssistant';
 
 function XRPLLogo() {
   return (
-    <svg width="22" height="22" viewBox="0 0 100 100" fill="none">
-      <circle cx="50" cy="50" r="48" stroke="#0085ff" strokeWidth="4" />
-      <path d="M25 30 L50 65 L75 30" stroke="#0085ff" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-      <path d="M35 70 L50 50 L65 70" stroke="#0085ff" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" fill="none" opacity="0.6" />
-    </svg>
+    <img src="/logo_icon.png" alt="" width="22" height="22" className="h-[22px] w-[22px] object-contain" />
   );
 }
 
