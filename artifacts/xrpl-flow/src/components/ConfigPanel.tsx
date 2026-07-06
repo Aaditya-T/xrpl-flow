@@ -1,9 +1,11 @@
 import { useState, useEffect, useMemo } from 'react';
-import { ChevronDown, ChevronUp } from 'lucide-react';
+import { ChevronDown, ChevronUp, Info } from 'lucide-react';
 import { getNodeDef, FieldDef } from '@/lib/nodeRegistry';
 import { useWorkflowStore } from '@/store/workflowStore';
 import { cn } from '@/lib/utils';
 import { buildValidatedTransaction, getTransactionAdapter } from '@/lib/transactionAdapters';
+import { navigateToDocs } from '@/lib/docsRoute';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 const STRUCTURED_FIELD_NAMES = new Set([
   'AcceptedCredentials', 'AuthAccounts', 'AuthorizeCredentials', 'CredentialIDs',
@@ -157,6 +159,32 @@ function WalletPicker({ value, onChange, wallets }: {
         </option>
       ))}
     </select>
+  );
+}
+
+function FieldLabel({ field }: { field: FieldDef }) {
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1">
+      <span className="truncate">{field.label}</span>
+      {field.required && <span className="text-red-500">*</span>}
+      {field.docsId && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={() => navigateToDocs(field.docsId!)}
+              aria-label={`Open docs for ${field.label}`}
+              className="inline-flex h-4 w-4 flex-shrink-0 items-center justify-center rounded text-slate-500 transition-colors hover:bg-blue-500/10 hover:text-blue-300"
+            >
+              <Info size={11} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="bg-[#111827] text-slate-100">
+            Open docs for this field
+          </TooltipContent>
+        </Tooltip>
+      )}
+    </span>
   );
 }
 
@@ -349,8 +377,7 @@ export function ConfigPanel() {
             {requiredFields.map(field => (
               <div key={field.name}>
                 <label className="flex items-center gap-1 text-[10px] text-slate-400 mb-1 font-mono">
-                  {field.label}
-                  <span className="text-red-500">*</span>
+                  <FieldLabel field={field} />
                 </label>
                 <FieldInput
                   field={field}
@@ -379,7 +406,9 @@ export function ConfigPanel() {
               <div className="space-y-2.5 mt-1.5">
                 {optionalFields.map(field => (
                   <div key={field.name}>
-                    <label className="block text-[10px] text-slate-400 mb-1 font-mono">{field.label}</label>
+                    <label className="flex items-center gap-1 text-[10px] text-slate-400 mb-1 font-mono">
+                      <FieldLabel field={field} />
+                    </label>
                     <FieldInput
                       field={field}
                       value={localConfig[field.name]}

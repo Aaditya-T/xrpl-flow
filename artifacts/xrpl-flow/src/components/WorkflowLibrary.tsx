@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Boxes, Copy, Search, Send, Sparkles, Trash2, Upload, UserRound, X } from 'lucide-react';
+import { AlertTriangle, Boxes, Check, Copy, Search, Send, Sparkles, Trash2, Upload, UserRound, X } from 'lucide-react';
 import { useWorkflowStore } from '@/store/workflowStore';
 import { getTransactionAdapter } from '@/lib/transactionAdapters';
 import { createExampleWorkflowDocuments } from '@/lib/exampleWorkflows';
 import { WORKFLOW_VERSION, type WorkflowDocumentV2 } from '@/lib/workflowTypes';
 import {
+  deleteMarketplaceTemplate,
   listMarketplaceTemplates,
   publishMarketplaceTemplate,
   type MarketplaceTemplate,
@@ -43,6 +44,41 @@ const TEMPLATE_DETAILS: Record<string, { description: string; tags: string[]; au
 
 type LibraryFilter = 'templates' | 'marketplace' | 'mine' | 'all';
 
+type LibraryItemKind = 'template' | 'marketplace' | 'local';
+
+type LibraryItem = {
+  kind: LibraryItemKind;
+  document: WorkflowDocumentV2;
+  details?: { description: string; tags: string[]; author: string };
+  marketplaceId?: string;
+  authorAddress?: string;
+  /** Set on local items that the signed-in user has already published. */
+  publishedTemplateId?: string;
+};
+
+const KIND_STYLES: Record<LibraryItemKind, { icon: string; chip: string; label: string }> = {
+  template: { icon: 'bg-blue-600/15 text-blue-400', chip: 'border-blue-700/60 bg-blue-600/15 text-blue-300', label: 'Official template' },
+  marketplace: { icon: 'bg-emerald-600/15 text-emerald-400', chip: 'border-emerald-700/60 bg-emerald-600/15 text-emerald-300', label: 'Community' },
+  local: { icon: 'bg-violet-600/15 text-violet-400', chip: 'border-violet-700/60 bg-violet-600/15 text-violet-300', label: 'My workflow' },
+};
+
+const MARKETPLACE_TAG_OPTIONS = [
+  'Beginner', 'Payments', 'Queries', 'Tokens', 'NFT', 'DEX', 'AMM', 'CSV',
+  'Airdrop', 'Analytics', 'Audit', 'Treasury', 'Safety', 'Loop',
+  'Control flow', 'Timing', 'Test Cases', 'Devnet', 'Clio', 'Export',
+  'Marketplace', 'Community', 'Compliance', 'Lending', 'Vaults',
+];
+
+type PublishDraft = {
+  workflow: WorkflowDocumentV2;
+  name: string;
+  description: string;
+  tags: string[];
+  authorName: string;
+  /** When set, the previous published version is removed after a successful publish. */
+  replaceTemplateId?: string;
+} | null;
+
 const workflowUsesBatch = (document: WorkflowDocumentV2, tags: string[] = []) =>
   document.nodes.some(node => node.type === 'BatchContainer') ||
   [document.name, ...tags].some(value => /batch/i.test(value));
@@ -70,6 +106,7 @@ export function WorkflowLibrary({
   const [marketplaceTemplates, setMarketplaceTemplates] = useState<MarketplaceTemplate[]>([]);
   const [marketplaceError, setMarketplaceError] = useState('');
   const [publishing, setPublishing] = useState(false);
+  const [publishDraft, setPublishDraft] = useState<PublishDraft>(null);
   const [selectedLocalWorkflows, setSelectedLocalWorkflows] = useState<string[]>([]);
   const {
     savedWorkflows, currentWorkflowId, currentWorkflowName, currentWorkflowCreatedAt,
@@ -101,12 +138,8 @@ export function WorkflowLibrary({
         counts.set(tag, (counts.get(tag) || 0) + 1);
       }
     }
-    for (const document of Object.values(savedWorkflows)) {
-      if (document.id.startsWith('example-') && workflowUsesBatch(document, TEMPLATE_DETAILS[document.name]?.tags)) continue;
-      for (const tag of TEMPLATE_DETAILS[document.name]?.tags || ['Local']) {
-        counts.set(tag, (counts.get(tag) || 0) + 1);
-      }
-    }
+    const localCount = Object.keys(savedWorkflows).length;
+    if (localCount > 0) counts.set('Local', (counts.get('Local') || 0) + localCount);
     for (const template of marketplaceTemplates) {
       if (workflowUsesBatch(template.workflow, template.tags)) continue;
       for (const tag of template.tags || ['Marketplace']) counts.set(tag, (counts.get(tag) || 0) + 1);
@@ -133,62 +166,161 @@ export function WorkflowLibrary({
     setSelectedLocalWorkflows([]);
   };
 
-  const workflows = useMemo(() => [
-    ...exampleWorkflows.map(document => ({ document, template: true, marketplace: false, details: TEMPLATE_DETAILS[document.name] })),
-    ...Object.values(savedWorkflows).map(document => ({ document, template: false, marketplace: false, details: TEMPLATE_DETAILS[document.name] })),
-    ...marketplaceTemplates.map(template => ({
-      document: template.workflow,
-      template: false,
-      marketplace: true,
-      details: { description: template.description, tags: template.tags, author: template.authorName || template.authorAddress },
-      marketplaceId: template.id,
-    })),
-  ]
-    .filter(item => !(item.template || item.marketplace) || !workflowUsesBatch(item.document, item.details?.tags))
-    .filter(item => filter === 'all' || (filter === 'templates' ? item.template : filter === 'marketplace' ? item.marketplace : !item.template && !item.marketplace))
-    .filter(item => activeTags.length === 0 || activeTags.every(tag => (item.details?.tags || ['Local']).includes(tag)))
-    .filter(item => {
-      const haystack = [item.document.name, item.details?.description, item.details?.author, ...(item.details?.tags || [])].join(' ').toLowerCase();
-      return haystack.includes(query.trim().toLowerCase());
-    })
-    .sort((a, b) => Number(b.template) - Number(a.template) || Number(b.marketplace) - Number(a.marketplace) || b.document.updatedAt - a.document.updatedAt), [exampleWorkflows, savedWorkflows, marketplaceTemplates, filter, query, activeTags]);
+  // Local workflows the signed-in user already published are linked by the
+  // workflow document id embedded in the published template.
+  const publishedByWorkflowId = useMemo(() => {
+    const map = new Map<string, string>();
+    if (!marketplaceUser) return map;
+    for (const template of marketplaceTemplates) {
+      if (template.authorAddress !== marketplaceUser.address) continue;
+      const workflowId = (template.workflow as WorkflowDocumentV2 | undefined)?.id;
+      if (workflowId) map.set(workflowId, template.id);
+    }
+    return map;
+  }, [marketplaceTemplates, marketplaceUser]);
 
-  const publishCurrent = async () => {
+  const workflows = useMemo(() => {
+    const items: LibraryItem[] = [
+      ...exampleWorkflows.map((document): LibraryItem => ({ kind: 'template', document, details: TEMPLATE_DETAILS[document.name] })),
+      ...Object.values(savedWorkflows).map((document): LibraryItem => ({
+        kind: 'local',
+        document,
+        publishedTemplateId: publishedByWorkflowId.get(document.id),
+      })),
+      ...marketplaceTemplates.map((template): LibraryItem => ({
+        kind: 'marketplace',
+        document: template.workflow,
+        details: { description: template.description, tags: template.tags, author: template.authorName || template.authorAddress },
+        marketplaceId: template.id,
+        authorAddress: template.authorAddress,
+      })),
+    ];
+
+    const kindRank: Record<LibraryItemKind, number> = { template: 0, marketplace: 1, local: 2 };
+    return items
+      .filter(item => item.kind === 'local' || !workflowUsesBatch(item.document, item.details?.tags))
+      .filter(item => {
+        if (filter === 'all') return true;
+        if (filter === 'templates') return item.kind === 'template';
+        if (filter === 'marketplace') return item.kind === 'marketplace';
+        // "My workflows" shows only local documents; a published one carries a
+        // "Published" chip instead of appearing twice.
+        return item.kind === 'local';
+      })
+      .filter(item => activeTags.length === 0 || activeTags.every(tag => (item.details?.tags || ['Local']).includes(tag)))
+      .filter(item => {
+        const haystack = [item.document.name, item.details?.description, item.details?.author, ...(item.details?.tags || [])].join(' ').toLowerCase();
+        return haystack.includes(query.trim().toLowerCase());
+      })
+      .sort((a, b) => kindRank[a.kind] - kindRank[b.kind] || b.document.updatedAt - a.document.updatedAt);
+  }, [exampleWorkflows, savedWorkflows, marketplaceTemplates, filter, query, activeTags, publishedByWorkflowId]);
+
+  const openPublishDialog = async (workflow: WorkflowDocumentV2, replaceTemplateId?: string) => {
     if (!marketplaceUser) {
       await onRequestXamanSignIn();
       return;
     }
-    const description = window.prompt('Marketplace description for this workflow?')?.trim() || '';
-    const tagText = window.prompt('Tags, comma separated', 'Community,Template')?.trim() || '';
-    const tags = tagText.split(',').map(tag => tag.trim()).filter(Boolean);
-    if (tags.length === 0) {
-      setMarketplaceError('Add at least one tag before publishing.');
+    const existing = replaceTemplateId ? marketplaceTemplates.find(template => template.id === replaceTemplateId) : undefined;
+    setMarketplaceError('');
+    setPublishDraft({
+      workflow,
+      name: workflow.name,
+      description: existing?.description || '',
+      tags: (existing?.tags?.length ? existing.tags : ['Community']).slice(0, 8),
+      authorName: existing?.authorName || marketplaceUser.displayName || '',
+      replaceTemplateId,
+    });
+  };
+
+  const togglePublishTag = (tag: string) => {
+    setPublishDraft(previous => {
+      if (!previous) return previous;
+      return {
+        ...previous,
+        tags: previous.tags.includes(tag)
+          ? previous.tags.filter(item => item !== tag)
+          : [...previous.tags, tag].slice(0, 12),
+      };
+    });
+  };
+
+  const updatePublishDraft = (patch: Partial<NonNullable<PublishDraft>>) => {
+    setPublishDraft(previous => previous ? { ...previous, ...patch } : previous);
+  };
+
+  const submitPublishDraft = async () => {
+    if (!publishDraft) return;
+    if (!marketplaceUser) {
+      await onRequestXamanSignIn();
       return;
     }
-    const now = Date.now();
-    const workflow: WorkflowDocumentV2 = {
-      version: WORKFLOW_VERSION,
-      id: currentWorkflowId,
-      name: currentWorkflowName,
-      createdAt: currentWorkflowCreatedAt,
-      updatedAt: now,
-      nodes: nodes as WorkflowDocumentV2['nodes'],
-      edges,
-    };
+    const name = publishDraft.name.trim();
+    const description = publishDraft.description.trim();
+    const authorName = publishDraft.authorName.trim();
+    const tags = publishDraft.tags.map(tag => tag.trim()).filter(Boolean);
+    if (!name) {
+      setMarketplaceError('Template name is required.');
+      return;
+    }
+    if (!description) {
+      setMarketplaceError('Add a short description so users know what this template does.');
+      return;
+    }
+    if (publishDraft.workflow.nodes.length === 0) {
+      setMarketplaceError('Add at least one node before publishing this workflow.');
+      return;
+    }
+    if (tags.length === 0) {
+      setMarketplaceError('Select at least one tag before publishing.');
+      return;
+    }
     setPublishing(true);
     setMarketplaceError('');
     try {
+      const workflow: WorkflowDocumentV2 = {
+        ...publishDraft.workflow,
+        name,
+        updatedAt: Date.now(),
+      };
       if (workflowUsesBatch(workflow, tags)) {
         throw new Error('Batch templates are disabled for now. Remove Batch nodes before publishing.');
       }
-      const { template } = await publishMarketplaceTemplate({ name: currentWorkflowName, description, tags, workflow });
-      setMarketplaceTemplates(previous => [template, ...previous]);
+      const { template } = await publishMarketplaceTemplate({ name, description, tags, authorName, workflow });
+      const replacedId = publishDraft.replaceTemplateId;
+      if (replacedId) {
+        // Republish = replace: remove the previous version so the marketplace
+        // never shows two copies of the same workflow.
+        await deleteMarketplaceTemplate(replacedId).catch(() => {});
+      }
+      setMarketplaceTemplates(previous => [template, ...previous.filter(item => item.id !== replacedId)]);
       setFilter('marketplace');
+      setPublishDraft(null);
     } catch (error) {
       setMarketplaceError(error instanceof Error ? error.message : 'Publish failed.');
     } finally {
       setPublishing(false);
     }
+  };
+
+  const deletePublishedTemplate = async (id: string) => {
+    if (!confirm('Delete this published marketplace template?')) return;
+    setMarketplaceError('');
+    try {
+      await deleteMarketplaceTemplate(id);
+      setMarketplaceTemplates(previous => previous.filter(template => template.id !== id));
+    } catch (error) {
+      setMarketplaceError(error instanceof Error ? error.message : 'Could not delete marketplace template.');
+    }
+  };
+
+  const currentWorkflowDocument: WorkflowDocumentV2 = {
+    version: WORKFLOW_VERSION,
+    id: currentWorkflowId,
+    name: currentWorkflowName,
+    createdAt: currentWorkflowCreatedAt,
+    updatedAt: Date.now(),
+    nodes: nodes as WorkflowDocumentV2['nodes'],
+    edges,
   };
 
   if (!open) return null;
@@ -211,9 +343,13 @@ export function WorkflowLibrary({
         <p className="text-[10px] font-semibold text-violet-200">Marketplace</p>
         <p className="mt-1 text-[9px] leading-relaxed text-violet-100/70">{marketplaceUser ? `Signed in as ${marketplaceUser.displayName || marketplaceUser.address}` : 'Sign in with Xaman to publish your workflow templates.'}</p>
         {marketplaceUser ? <button type="button" onClick={onSignOutXaman} className="mt-3 w-full rounded border border-violet-800/50 px-2 py-1.5 text-[9px] text-violet-200 hover:bg-violet-900/30">Sign out</button> : <button type="button" onClick={onRequestXamanSignIn} className="mt-3 flex w-full items-center justify-center gap-1 rounded bg-violet-600 px-2 py-1.5 text-[9px] font-medium text-white hover:bg-violet-500">Sign in with Xaman</button>}
-        <button type="button" onClick={publishCurrent} disabled={publishing} className="mt-2 flex w-full items-center justify-center gap-1 rounded border border-emerald-800/50 px-2 py-1.5 text-[9px] text-emerald-200 hover:bg-emerald-900/25 disabled:opacity-50"><Send size={10} />{publishing ? 'Publishing…' : 'Publish current'}</button>
+        <button type="button" onClick={() => openPublishDialog(currentWorkflowDocument, publishedByWorkflowId.get(currentWorkflowId))} disabled={publishing} className="mt-2 flex w-full items-center justify-center gap-1 rounded border border-emerald-800/50 px-2 py-1.5 text-[9px] text-emerald-200 hover:bg-emerald-900/25 disabled:opacity-50"><Send size={10} />Publish open workflow</button>
         {marketplaceAuthError && <p className="mt-2 text-left text-[9px] leading-relaxed text-red-300">{marketplaceAuthError}</p>}
         {marketplaceError && <button type="button" onClick={() => setMarketplaceError('')} className="mt-2 text-left text-[9px] leading-relaxed text-red-300">{marketplaceError}</button>}
+      </div>
+      <div className="mt-3 rounded-lg border border-amber-900/40 bg-amber-950/20 p-3">
+        <p className="text-[10px] font-semibold text-amber-200">Beta mode</p>
+        <p className="mt-1 text-[9px] leading-relaxed text-amber-100/70">XRPL Flow is in beta. Bugs, validation gaps, and endpoint issues can appear. Test on Testnet or Devnet first.</p>
       </div>
       <div className="mt-3 rounded-lg border border-emerald-900/40 bg-emerald-950/20 p-3">
         <p className="text-[10px] font-semibold text-emerald-200">Tutorial mode</p>
@@ -254,24 +390,107 @@ export function WorkflowLibrary({
       <section className="flex-1 overflow-y-auto p-5">
         {workflows.length === 0 ? <div className="flex h-full flex-col items-center justify-center text-center"><Boxes size={30} className="mb-3 text-slate-700" /><p className="text-sm text-slate-400">No workflows found</p><p className="mt-1 text-[10px] text-slate-600">Try another search or import a shared v2 workflow.</p></div> :
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 2xl:grid-cols-3">{workflows.map((item) => {
-            const { document, template, details } = item;
+            const { kind, document, details } = item;
             const txCount = document.nodes.filter(node => Boolean(getTransactionAdapter(String(node.type)))).length;
             const queryCount = document.nodes.filter(node => String(node.type).includes('Query')).length;
-            const cardKey = `${document.id}:${'marketplaceId' in item ? item.marketplaceId : 'local'}`;
-            const selectable = !template && !item.marketplace;
+            const cardKey = `${kind}:${document.id}:${item.marketplaceId || 'local'}`;
+            const isLocal = kind === 'local';
             const selected = selectedLocalWorkflows.includes(document.name);
+            const ownMarketplace = kind === 'marketplace' && Boolean(marketplaceUser?.address) && marketplaceUser?.address === item.authorAddress;
+            const style = KIND_STYLES[kind];
+            const author = kind === 'template' ? (details?.author || 'XRPL Flow') : kind === 'marketplace' ? (details?.author || 'Community builder') : 'You';
             return <article key={cardKey} className={`group flex min-h-52 flex-col rounded-xl border bg-[#10141e] p-4 transition-colors hover:border-blue-500/45 ${document.id === currentWorkflowId ? 'border-blue-500/60' : 'border-[#252c3c]'}`}>
-              <div className="mb-4 flex items-start gap-3">
-                {selectable && <input type="checkbox" checked={selected} onChange={() => toggleLocalSelection(document.name)} aria-label={`Select ${document.name}`} className="mt-3 h-3.5 w-3.5 rounded border-[#30384a] bg-[#171c28] accent-blue-600" />}
-                <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg ${template ? 'bg-blue-600/15 text-blue-400' : item.marketplace ? 'bg-emerald-600/15 text-emerald-400' : 'bg-violet-600/15 text-violet-400'}`}>{template ? <Sparkles size={17} /> : <UserRound size={17} />}</div>
-                <div className="min-w-0"><h3 className="truncate text-[13px] font-semibold text-slate-100">{document.name}</h3><p className="mt-0.5 text-[9px] text-slate-500">by {details?.author || 'You'} {item.marketplace && <span className="ml-1 text-emerald-400">• marketplace</span>} {document.id === currentWorkflowId && <span className="ml-1 text-blue-400">• open</span>}</p></div>
+              <div className="mb-3 flex items-start gap-3">
+                {isLocal && <input type="checkbox" checked={selected} onChange={() => toggleLocalSelection(document.name)} aria-label={`Select ${document.name}`} className="mt-3 h-3.5 w-3.5 rounded border-[#30384a] bg-[#171c28] accent-blue-600" />}
+                <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg ${style.icon}`}>{kind === 'template' ? <Sparkles size={17} /> : <UserRound size={17} />}</div>
+                <div className="min-w-0">
+                  <h3 className="truncate text-[13px] font-semibold text-slate-100">{document.name}</h3>
+                  <p className="mt-0.5 text-[9px] text-slate-500">by {author} {document.id === currentWorkflowId && <span className="ml-1 text-blue-400">• open</span>}</p>
+                </div>
+              </div>
+              <div className="mb-3 flex flex-wrap gap-1.5">
+                <span className={`rounded-full border px-2 py-0.5 text-[8px] font-medium ${style.chip}`}>{style.label}</span>
+                {ownMarketplace && <span className="rounded-full border border-emerald-700/60 bg-emerald-600/15 px-2 py-0.5 text-[8px] font-medium text-emerald-300">Yours</span>}
+                {isLocal && item.publishedTemplateId && <span className="rounded-full border border-emerald-700/60 bg-emerald-600/15 px-2 py-0.5 text-[8px] font-medium text-emerald-300">Published</span>}
               </div>
               <p className="mb-4 line-clamp-3 text-[10px] leading-relaxed text-slate-400">{details?.description || 'A local XRPL Flow v2 workflow. Export it to share with other builders.'}</p>
               <div className="mb-4 flex flex-wrap gap-1.5">{(details?.tags || ['Local']).map(tag => <button key={tag} type="button" onClick={() => toggleTag(tag)} className={`rounded-full border px-2 py-0.5 text-[8px] transition-colors ${activeTags.includes(tag) ? 'border-blue-500 bg-blue-600/20 text-blue-200' : 'border-[#30384a] bg-[#171c28] text-slate-400 hover:border-blue-600/60 hover:text-blue-200'}`}>{tag}</button>)}</div>
-              <div className="mt-auto flex items-center gap-2 border-t border-[#222938] pt-3"><span className="mr-auto text-[9px] text-slate-600">{document.nodes.length} nodes · {queryCount} queries · {txCount} txns</span>{!template && !item.marketplace && <><button type="button" onClick={() => duplicateWorkflow(document.name)} title="Duplicate" className="rounded p-1.5 text-slate-500 hover:bg-white/5 hover:text-slate-200"><Copy size={12} /></button><button type="button" onClick={() => { if (confirm(`Delete “${document.name}”?`)) deleteWorkflow(document.name); }} title="Delete" className="rounded p-1.5 text-slate-500 hover:bg-red-950/50 hover:text-red-300"><Trash2 size={12} /></button></>}<button type="button" onClick={() => { if (template || item.marketplace) createWorkflow(document.name, document.nodes as any, document.edges); else loadWorkflow(document.name); onClose(); }} className="rounded-md bg-blue-600 px-3 py-1.5 text-[10px] font-medium text-white hover:bg-blue-500">{template || item.marketplace ? 'Use as draft' : 'Open'}</button></div>
+              <div className="mt-auto flex items-center gap-2 border-t border-[#222938] pt-3">
+                <span className="mr-auto text-[9px] text-slate-600">{document.nodes.length} nodes · {queryCount} queries · {txCount} txns</span>
+                {isLocal && <button type="button" onClick={() => openPublishDialog(document, item.publishedTemplateId)} className="rounded-md border border-emerald-800/60 px-2.5 py-1.5 text-[10px] font-medium text-emerald-200 hover:bg-emerald-900/25">{item.publishedTemplateId ? 'Update published' : 'Publish'}</button>}
+                {ownMarketplace && item.marketplaceId && <button type="button" onClick={() => deletePublishedTemplate(item.marketplaceId!)} title="Remove from marketplace" className="rounded p-1.5 text-slate-500 hover:bg-red-950/50 hover:text-red-300"><Trash2 size={12} /></button>}
+                {isLocal && <>
+                  <button type="button" onClick={() => duplicateWorkflow(document.name)} title="Duplicate" className="rounded p-1.5 text-slate-500 hover:bg-white/5 hover:text-slate-200"><Copy size={12} /></button>
+                  <button type="button" onClick={() => { if (confirm(`Delete “${document.name}”?`)) deleteWorkflow(document.name); }} title="Delete" className="rounded p-1.5 text-slate-500 hover:bg-red-950/50 hover:text-red-300"><Trash2 size={12} /></button>
+                </>}
+                <button type="button" onClick={() => { if (isLocal) loadWorkflow(document.name); else createWorkflow(document.name, document.nodes as any, document.edges, { autosave: false }); onClose(); }} className="rounded-md bg-blue-600 px-3 py-1.5 text-[10px] font-medium text-white hover:bg-blue-500">{isLocal ? 'Open' : 'Use as draft'}</button>
+              </div>
             </article>;
           })}</div>}
       </section>
     </main>
+    {publishDraft && (
+      <div className="absolute inset-0 z-[75] flex items-center justify-center bg-black/55 p-4">
+        <div className="w-full max-w-xl rounded-xl border border-[#2a3245] bg-[#0d1018] shadow-2xl">
+          <div className="flex items-start justify-between gap-3 border-b border-[#202635] px-5 py-4">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-100">{publishDraft.replaceTemplateId ? 'Update published template' : 'Publish workflow template'}</h3>
+              <p className="mt-1 text-[10px] text-slate-500">{publishDraft.replaceTemplateId ? 'This replaces your previously published version in the marketplace.' : 'Share this workflow with the community. It stays editable in My workflows.'}</p>
+            </div>
+            <button type="button" onClick={() => setPublishDraft(null)} className="rounded p-1 text-slate-500 hover:bg-white/5 hover:text-slate-200" aria-label="Close publish dialog"><X size={16} /></button>
+          </div>
+
+          <div className="space-y-3 px-5 py-4">
+            <div className="rounded-md border border-amber-800/50 bg-amber-950/20 px-3 py-2">
+              <div className="flex gap-2">
+                <AlertTriangle size={14} className="mt-0.5 flex-shrink-0 text-amber-300" />
+                <p className="text-[11px] leading-relaxed text-amber-100/80">XRPL Flow marketplace publishing is beta. Templates may contain bugs or require setup, so describe assumptions clearly and test on Testnet or Devnet first.</p>
+              </div>
+            </div>
+
+            <label className="block">
+              <span className="mb-1 block text-[10px] font-mono text-slate-400">Template name</span>
+              <input value={publishDraft.name} onChange={event => updatePublishDraft({ name: event.target.value })} className="w-full rounded border border-[#293044] bg-[#080b12] px-3 py-2 text-[12px] text-slate-100 outline-none focus:border-blue-500/60" />
+            </label>
+
+            <label className="block">
+              <span className="mb-1 block text-[10px] font-mono text-slate-400">Display name</span>
+              <input value={publishDraft.authorName} onChange={event => updatePublishDraft({ authorName: event.target.value })} placeholder={marketplaceUser?.address || 'Shown as author'} className="w-full rounded border border-[#293044] bg-[#080b12] px-3 py-2 text-[12px] text-slate-100 outline-none focus:border-blue-500/60 placeholder:text-slate-600" />
+            </label>
+
+            <label className="block">
+              <span className="mb-1 block text-[10px] font-mono text-slate-400">Description</span>
+              <textarea value={publishDraft.description} onChange={event => updatePublishDraft({ description: event.target.value })} rows={4} placeholder="What does this template do? What should users fill before running it?" className="w-full resize-none rounded border border-[#293044] bg-[#080b12] px-3 py-2 text-[12px] leading-5 text-slate-100 outline-none focus:border-blue-500/60 placeholder:text-slate-600" />
+            </label>
+
+            <div>
+              <span className="mb-2 block text-[10px] font-mono text-slate-400">Tags</span>
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {publishDraft.tags.length === 0 ? <span className="text-[10px] text-slate-600">Select at least one tag.</span> : publishDraft.tags.map(tag => (
+                  <button key={tag} type="button" onClick={() => togglePublishTag(tag)} className="inline-flex items-center gap-1 rounded-full border border-blue-700/60 bg-blue-600/15 px-2 py-0.5 text-[9px] text-blue-200">
+                    <Check size={10} />{tag} ×
+                  </button>
+                ))}
+              </div>
+              <div className="max-h-28 overflow-y-auto rounded border border-[#293044] bg-[#080b12] p-2">
+                <div className="flex flex-wrap gap-1.5">
+                  {MARKETPLACE_TAG_OPTIONS.map(tag => {
+                    const selected = publishDraft.tags.includes(tag);
+                    return <button key={tag} type="button" onClick={() => togglePublishTag(tag)} className={`rounded-full border px-2 py-1 text-[9px] transition-colors ${selected ? 'border-blue-500 bg-blue-600/20 text-blue-200' : 'border-[#30384a] text-slate-400 hover:border-blue-600/60 hover:text-blue-200'}`}>{tag}</button>;
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {marketplaceError && <button type="button" onClick={() => setMarketplaceError('')} className="w-full rounded border border-red-800/50 bg-red-950/20 px-3 py-2 text-left text-[11px] leading-relaxed text-red-300">{marketplaceError}</button>}
+          </div>
+
+          <div className="flex items-center justify-end gap-2 border-t border-[#202635] px-5 py-4">
+            <button type="button" onClick={() => setPublishDraft(null)} className="rounded border border-[#30384c] px-3 py-2 text-[11px] text-slate-300 hover:bg-white/5">Cancel</button>
+            <button type="button" onClick={submitPublishDraft} disabled={publishing} className="inline-flex items-center gap-1.5 rounded bg-emerald-600 px-3 py-2 text-[11px] font-medium text-white hover:bg-emerald-500 disabled:cursor-wait disabled:opacity-60"><Send size={12} />{publishing ? 'Publishing...' : publishDraft.replaceTemplateId ? 'Update template' : 'Publish template'}</button>
+          </div>
+        </div>
+      </div>
+    )}
   </div>;
 }

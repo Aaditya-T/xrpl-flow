@@ -8,6 +8,7 @@ export interface FieldDef {
   defaultValue?: any;
   options?: string[];
   description?: string;
+  docsId?: string;
 }
 
 export interface NodeTypeDef {
@@ -63,6 +64,7 @@ const amt    = (name: string, label: string, req = false, desc?: string): FieldD
   ({ name, label, type: 'amount',   required: req, description: desc });
 const issue  = (name: string, label: string, req = false, desc?: string): FieldDef =>
   ({ name, label, type: 'issue', required: req, description: desc });
+const withDocs = (field: FieldDef, docsId: string): FieldDef => ({ ...field, docsId });
 
 /**
  * Fields present on EVERY XRPL transaction (BaseTransaction).
@@ -77,8 +79,8 @@ const COMMON_FIELDS: FieldDef[] = [
   num  ('TicketSequence',      'Ticket Sequence — use instead of Sequence'),
   hex  ('AccountTxnID',        'Account Txn ID (previous txn hash)'),
   num  ('NetworkID',           'Network ID'),
-  ta   ('Memos',               'Memos (JSON)', false,
-        '[{"Memo":{"MemoType":"hex","MemoData":"hex"}}]'),
+  withDocs(ta('Memos',         'Memos (JSON)', false,
+        '[{"Memo":{"MemoType":"hex","MemoData":"hex"}}]'), 'transaction-fields#json-fields'),
 ];
 
 /** Append COMMON_FIELDS after a node's required/optional fields. */
@@ -126,8 +128,8 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
       addr('Account', 'Account'),
       addr('Peer', 'Peer / issuer filter', false),
       num('Limit', 'Limit'),
-      txt('Marker', 'Marker', false, 'For pagination. Bind {{output.data.marker}} inside loops.'),
-      txt('MarkerEndpoint', 'Marker Endpoint', false, 'For pagination. Bind {{output.data.markerEndpoint}} so marker stays on the same endpoint.'),
+      withDocs(txt('Marker', 'Marker', false, 'For pagination marker.'), 'pagination-patterns#markers'),
+      withDocs(txt('MarkerEndpoint', 'Marker Endpoint', false, 'Preserve endpoint for the next page.'), 'pagination-patterns#markers'),
       txt('LedgerIndex', 'Ledger Index', false, 'Default: validated'),
     ],
   },
@@ -140,8 +142,8 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
       num('LedgerIndexMin', 'Ledger Index Min (-1 for earliest)'),
       num('LedgerIndexMax', 'Ledger Index Max (-1 for latest)'),
       num('Limit', 'Limit'),
-      txt('Marker', 'Marker', false, 'For pagination. Bind {{output.data.marker}} inside loops.'),
-      txt('MarkerEndpoint', 'Marker Endpoint', false, 'For pagination. Bind {{output.data.markerEndpoint}} so marker stays on the same endpoint.'),
+      withDocs(txt('Marker', 'Marker', false, 'For pagination marker.'), 'pagination-patterns#markers'),
+      withDocs(txt('MarkerEndpoint', 'Marker Endpoint', false, 'Preserve endpoint for the next page.'), 'pagination-patterns#markers'),
       bool('Forward', 'Oldest first'),
     ],
   },
@@ -157,8 +159,8 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
       },
       bool('DeletionBlockersOnly', 'Deletion blockers only'),
       num('Limit', 'Limit'),
-      txt('Marker', 'Marker', false, 'For pagination. Bind {{output.data.marker}} inside loops.'),
-      txt('MarkerEndpoint', 'Marker Endpoint', false, 'For pagination. Bind {{output.data.markerEndpoint}} so marker stays on the same endpoint.'),
+      withDocs(txt('Marker', 'Marker', false, 'For pagination marker.'), 'pagination-patterns#markers'),
+      withDocs(txt('MarkerEndpoint', 'Marker Endpoint', false, 'Preserve endpoint for the next page.'), 'pagination-patterns#markers'),
       txt('LedgerIndex', 'Ledger Index', false, 'Default: validated'),
     ],
   },
@@ -197,8 +199,8 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: [
       hex('NFTokenID', 'NFToken ID', true),
       num('Limit', 'Limit'),
-      txt('Marker', 'Marker', false, 'For pagination. Bind {{output.data.marker}} inside loops.'),
-      txt('MarkerEndpoint', 'Marker Endpoint', false, 'For pagination. Bind {{output.data.markerEndpoint}} so marker stays on the same endpoint.'),
+      withDocs(txt('Marker', 'Marker', false, 'For pagination marker.'), 'pagination-patterns#markers'),
+      withDocs(txt('MarkerEndpoint', 'Marker Endpoint', false, 'Preserve endpoint for the next page.'), 'pagination-patterns#markers'),
       txt('LedgerIndex', 'Ledger Index', false, 'Use validated or a validated ledger number'),
     ],
   },
@@ -209,8 +211,8 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: [
       addr('Issuer', 'Issuer'),
       num('Limit', 'Limit'),
-      txt('Marker', 'Marker', false, 'For pagination. Bind {{output.data.marker}} inside loops.'),
-      txt('MarkerEndpoint', 'Marker Endpoint', false, 'For pagination. Bind {{output.data.markerEndpoint}} so marker stays on the same endpoint.'),
+      withDocs(txt('Marker', 'Marker', false, 'For pagination marker.'), 'pagination-patterns#markers'),
+      withDocs(txt('MarkerEndpoint', 'Marker Endpoint', false, 'Preserve endpoint for the next page.'), 'pagination-patterns#markers'),
       txt('LedgerIndex', 'Ledger Index', false, 'Use validated or a validated ledger number'),
     ],
   },
@@ -219,7 +221,7 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     category: 'Ledger Queries', color: CATEGORIES.QUERIES.color,
     networkGating: 'all', description: 'Power-user query for any public XRPL API command.',
     fields: [
-      ta('RequestJson', 'Request JSON', true, '{"command":"account_info","account":"r...","ledger_index":"validated"}'),
+      withDocs(ta('RequestJson', 'Request JSON', true, '{"command":"account_info","account":"r...","ledger_index":"validated"}'), 'transaction-fields#json-fields'),
       bool('PreferClio', 'Prefer Clio'),
       bool('ClioOnly', 'Clio only'),
     ],
@@ -265,8 +267,8 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: [
       txt('AccumulatorKey', 'Accumulator Key', false, 'Optional; use when multiple accumulators share a loop'),
       txt('PageItemsPath', 'Page Items Path', false, 'Default: items'),
-      txt('MarkerPath', 'Marker Path', false, 'Default: data.marker'),
-      txt('MarkerEndpointPath', 'Marker Endpoint Path', false, 'Default: data.markerEndpoint'),
+      withDocs(txt('MarkerPath', 'Marker Path', false, 'Default: data.marker'), 'pagination-patterns#markers'),
+      withDocs(txt('MarkerEndpointPath', 'Marker Endpoint Path', false, 'Default: data.markerEndpoint'), 'pagination-patterns#markers'),
     ],
   },
   {
@@ -347,8 +349,8 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     fields: withCommon([
       addr('Account',      'Account'),
       num ('SignerQuorum', 'Signer Quorum', true),
-      ta  ('SignerEntries','Signer Entries (JSON)', false,
-           '[{"SignerEntry":{"Account":"r...","SignerWeight":1}}]'),
+      withDocs(ta('SignerEntries','Signer Entries (JSON)', false,
+           '[{"SignerEntry":{"Account":"r...","SignerWeight":1}}]'), 'transaction-fields#json-fields'),
     ]),
   },
   {
@@ -1142,8 +1144,8 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
     category: 'Control Flow', color: CATEGORIES.CONTROL_FLOW.color,
     networkGating: 'all', description: 'Route flow using a safe expression.',
     fields: [
-      txt('Expression', 'Safe Expression', true,
-          'e.g. output.meta.TransactionResult == "tesSUCCESS"'),
+      withDocs(txt('Expression', 'Safe Expression', true,
+          'e.g. output.meta.TransactionResult == "tesSUCCESS"'), 'safe-expressions#syntax'),
       txt('TrueLabel',  'True Branch Label',  false),
       txt('FalseLabel', 'False Branch Label', false),
     ],
@@ -1172,9 +1174,9 @@ export const NODE_REGISTRY: NodeTypeDef[] = [
         description: '"count" repeats N times; "until-condition" uses the safe expression',
       },
       num('Iterations',    'Max Iterations (count mode)'),
-      txt('Condition',     'Stop Condition (safe expression)', false,
-          'Evaluated after each iteration. e.g. output.count >= 3'),
-      num('DelayBetween',  'Delay Between Iterations (ms)'),
+      withDocs(txt('Condition', 'Stop Condition (safe expression)', false,
+          'Evaluated after each iteration.'), 'safe-expressions#loop-stop-conditions'),
+      withDocs(num('DelayBetween', 'Delay Between Iterations (ms)'), 'loop-containers#repeat-every-n-minutes'),
     ],
   },
   {

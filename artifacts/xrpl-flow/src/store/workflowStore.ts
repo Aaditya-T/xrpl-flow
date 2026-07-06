@@ -115,7 +115,7 @@ interface WorkflowState {
   deleteWorkflow: (name: string) => void;
   deleteWorkflows: (names: string[]) => void;
   duplicateWorkflow: (name: string) => void;
-  createWorkflow: (name: string, nodes: Node[], edges: Edge[]) => void;
+  createWorkflow: (name: string, nodes: Node[], edges: Edge[], options?: { autosave?: boolean }) => void;
   requestTransactionReview: (request: TransactionReviewRequest) => Promise<boolean>;
   resolveTransactionReview: (approved: boolean) => void;
 }
@@ -380,7 +380,7 @@ export const useWorkflowStore = create<WorkflowState>()(
         localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(state.savedWorkflows));
       });
     },
-    createWorkflow: (name, nodes, edges) => {
+    createWorkflow: (name, nodes, edges, options = {}) => {
       set((state) => {
         const baseName = name.trim() || 'AI Generated Workflow';
         state.currentWorkflowName = baseName;
@@ -391,7 +391,7 @@ export const useWorkflowStore = create<WorkflowState>()(
         state.selectedNodeId = null;
         state.undoStack = [];
         state.redoStack = [];
-        state.dirty = true;
+        state.dirty = options.autosave ?? true;
       });
     },
     requestTransactionReview: (request) => {

@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { Play, Square, Save, Download, Upload, Pencil, Check, X, Wifi, WifiOff, Copy, Trash2, LayoutTemplate, Sparkles, LogIn, UserRound } from 'lucide-react';
+import { Play, Square, Save, Download, Upload, Pencil, Check, X, Wifi, WifiOff, Copy, Trash2, LayoutTemplate, Sparkles, LogIn, UserRound, BookOpen } from 'lucide-react';
 import { useWorkflowStore } from '@/store/workflowStore';
 import {
   EXPLORER_URLS,
@@ -17,6 +17,7 @@ import { getTransactionAdapter } from '@/lib/transactionAdapters';
 import { WORKFLOW_VERSION, type WorkflowDocumentV2 } from '@/lib/workflowTypes';
 import { connectXRPL } from '@/lib/networkConnection';
 import { beginXamanSignIn, captureMarketplaceSessionFromUrl, getMarketplaceUser, setMarketplaceSession, type MarketplaceUser } from '@/lib/marketplaceClient';
+import { navigateToDocs } from '@/lib/docsRoute';
 import { WorkflowLibrary } from './WorkflowLibrary';
 import { AIWorkflowAssistant } from './AIWorkflowAssistant';
 
@@ -165,6 +166,7 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
   };
 
   const disconnectXaman = () => {
+    if (!window.confirm('Are you sure you want to log out of Xaman?')) return;
     setMarketplaceSession('');
     setMarketplaceUser(null);
     setMarketplaceAuthError('');
@@ -209,6 +211,7 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
         if (!wf.id || !wf.name || !Number.isFinite(wf.createdAt) || !Number.isFinite(wf.updatedAt) || !Array.isArray(wf.nodes) || !Array.isArray(wf.edges)) {
           throw new Error('Malformed v2 workflow document.');
         }
+        if (wf.nodes.length === 0) throw new Error('Import rejected: workflow must contain at least one node.');
         if (wf.nodes.length > 500 || wf.edges.length > 1_000) throw new Error('Workflow exceeds the 500-node / 1,000-edge safety limit.');
         const unknown = wf.nodes.find(node => !node.type || !getNodeDef(node.type));
         if (unknown) throw new Error(`Unsupported node type: ${String(unknown.type)}`);
@@ -317,6 +320,7 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
       <div className="flex items-center gap-2 flex-shrink-0">
         <XRPLLogo />
         <span className="text-[13px] font-semibold text-slate-100 tracking-tight">XRPL Flow</span>
+        <span title="XRPL Flow is in beta. Bugs may appear; test workflows on Testnet or Devnet first." className="rounded border border-amber-700/50 bg-amber-950/30 px-1.5 py-0.5 text-[8px] font-mono text-amber-300">BETA</span>
       </div>
 
       <div className="w-px h-5 bg-[#1e2130] mx-1 flex-shrink-0" />
@@ -367,6 +371,7 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
 
       <button type="button" onClick={() => setShowWorkflowLibrary(true)} data-testid="open-workflow-library" className="flex items-center gap-1.5 rounded border border-[#2e3448] bg-[#1e2130] px-2 py-1 text-[10px] text-slate-300 transition-colors hover:border-blue-500/40 hover:bg-[#252b3b] hover:text-white"><LayoutTemplate size={11} className="text-blue-400" />Workflows</button>
       <button type="button" onClick={() => setShowAIAssistant(true)} data-testid="open-ai-assistant" className="flex items-center gap-1.5 rounded border border-violet-700/40 bg-violet-950/25 px-2 py-1 text-[10px] text-violet-300 transition-colors hover:border-violet-500/60 hover:bg-violet-900/30 hover:text-violet-200"><Sparkles size={11} />Ask AI</button>
+      <button type="button" onClick={() => navigateToDocs('getting-started')} data-testid="open-docs" className="flex items-center gap-1.5 rounded border border-[#2e3448] bg-[#1e2130] px-2 py-1 text-[10px] text-slate-300 transition-colors hover:border-blue-500/40 hover:bg-[#252b3b] hover:text-white"><BookOpen size={11} className="text-blue-400" />Docs</button>
 
       {/* Export */}
       <button
@@ -400,7 +405,12 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
         onRequestXamanSignIn={connectXaman}
         onSignOutXaman={disconnectXaman}
       />
-      <AIWorkflowAssistant open={showAIAssistant} onClose={() => setShowAIAssistant(false)} />
+      <AIWorkflowAssistant
+        open={showAIAssistant}
+        onClose={() => setShowAIAssistant(false)}
+        marketplaceUser={marketplaceUser}
+        onRequestXamanSignIn={connectXaman}
+      />
 
       {/* Spacer */}
       <div className="flex-1" />
@@ -443,7 +453,7 @@ export function Header({ onToggleLog }: { onToggleLog: () => void }) {
         <button
           type="button"
           onClick={disconnectXaman}
-          title={`Connected with Xaman as ${marketplaceUser.address}. Click to disconnect.`}
+          title={`Connected with Xaman as ${marketplaceUser.address}. Click to log out.`}
           className="flex items-center gap-1.5 rounded border border-violet-700/50 bg-violet-950/30 px-2 py-1 text-[10px] text-violet-200 transition-colors hover:border-violet-500/70 hover:bg-violet-900/40"
         >
           <UserRound size={11} />

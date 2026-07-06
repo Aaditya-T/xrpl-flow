@@ -43,6 +43,22 @@ export type MarketplaceListResult = {
   templates: MarketplaceTemplate[];
 };
 
+export type AiWorkflowResult = {
+  message: string;
+  workflow: unknown;
+  usage?: {
+    used?: number;
+    remaining?: number;
+    limit?: number;
+  };
+};
+
+export type AiUsage = {
+  used: number;
+  remaining: number;
+  limit: number;
+};
+
 export function getMarketplaceSession(): string {
   return localStorage.getItem(SESSION_KEY) || '';
 }
@@ -55,11 +71,11 @@ export function setMarketplaceSession(token: string): void {
 export function captureMarketplaceSessionFromUrl(): string {
   const url = new URL(window.location.href);
   const token = url.searchParams.get('xrplFlowSession') || '';
-  if (!token) return getMarketplaceSession();
-  setMarketplaceSession(token);
-  url.searchParams.delete('xrplFlowSession');
-  window.history.replaceState({}, '', url.toString());
-  return token;
+  if (token) {
+    url.searchParams.delete('xrplFlowSession');
+    window.history.replaceState({}, '', url.toString());
+  }
+  return getMarketplaceSession();
 }
 
 async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -71,6 +87,7 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(requestUrl, {
     ...init,
     headers,
+    credentials: 'include',
   });
   const text = await response.text();
   let json: any = {};
@@ -94,7 +111,8 @@ export async function getMarketplaceUser(): Promise<MarketplaceUser | null> {
 }
 
 export async function beginXamanSignIn(): Promise<void> {
-  const result = await api<{ authorizationUrl: string }>(`/auth/xaman/start?returnTo=${encodeURIComponent(window.location.href)}`, {
+  const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}` || '/';
+  const result = await api<{ authorizationUrl: string }>(`/auth/xaman/start?returnTo=${encodeURIComponent(returnTo)}`, {
     method: 'GET',
     headers: {},
   });
@@ -119,6 +137,7 @@ export async function publishMarketplaceTemplate(input: {
   name: string;
   description: string;
   tags: string[];
+  authorName?: string;
   workflow: WorkflowDocumentV2;
 }): Promise<{ template: MarketplaceTemplate }> {
   const result = await api<{ template: MarketplaceTemplate }>('/marketplace/templates', {
@@ -126,4 +145,27 @@ export async function publishMarketplaceTemplate(input: {
     body: JSON.stringify(input),
   });
   return { template: result.template };
+}
+
+export async function deleteMarketplaceTemplate(id: string): Promise<void> {
+  await api<{ ok: true }>(`/marketplace/templates/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function createFreeAiWorkflow(input: {
+  prompt: string;
+  messages: Array<{ role: 'user' | 'assistant'; text: string }>;
+  registryContext: unknown;
+  currentGraph: unknown;
+}): Promise<AiWorkflowResult> {
+  return api<AiWorkflowResult>('/ai/workflow', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getFreeAiUsage(): Promise<AiUsage> {
+  const result = await api<{ usage: AiUsage }>('/ai/usage');
+  return result.usage;
 }

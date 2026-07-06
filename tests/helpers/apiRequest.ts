@@ -7,6 +7,8 @@ export type ApiResponse<T = any> = {
   headers: Record<string, string | string[] | number | undefined>;
   body: T;
   text: string;
+  redirectUrl?: string;
+  cookies?: Record<string, unknown>;
 };
 
 export function apiRequest<T = any>(
@@ -45,6 +47,8 @@ export function apiRequest<T = any>(
         headers: res._getHeaders(),
         body,
         text: String(text ?? ''),
+        redirectUrl: typeof res._getRedirectUrl === 'function' ? res._getRedirectUrl() : undefined,
+        cookies: typeof res._getCookies === 'function' ? res._getCookies() : undefined,
       });
     });
     res.on('error', reject);

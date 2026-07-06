@@ -13,17 +13,19 @@ function publicBaseUrl(req: Request): string {
   return process.env["PUBLIC_API_BASE_URL"] || `${req.protocol}://${req.get("host")}`;
 }
 
-function sanitizeReturnTo(value: unknown): string {
+function sanitizeReturnTo(value: unknown, req: Request): string {
   const text = typeof value === "string" ? value : "/";
   try {
-    const url = new URL(text, "http://localhost");
-    return `${url.pathname}${url.search}${url.hash}`.startsWith("//") ? "/" : text;
+    const current = new URL(publicBaseUrl(req));
+    const url = new URL(text, current.origin);
+    if (url.origin !== current.origin) return "/";
+    return `${url.pathname}${url.search}${url.hash}`;
   } catch {
     return "/";
   }
 }
 
-router.get("/auth/me", (req, res) => {
+router.get("/auth/me", rateLimit({ keyPrefix: "auth-me", windowMs: 60_000, max: 120 }), (req, res) => {
   const header = req.header("authorization") || "";
   const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : req.cookies?.["xrpl_flow_session"];
   res.json({ user: verifySessionToken(token) });
@@ -36,7 +38,7 @@ router.get("/auth/xaman/start", rateLimit({ keyPrefix: "xaman-start", windowMs: 
     return;
   }
   const redirectUri = `${publicBaseUrl(req)}/api/auth/xaman/callback`;
-  const state = signedState({ returnTo: sanitizeReturnTo(req.query["returnTo"]) });
+  const state = signedState({ returnTo: sanitizeReturnTo(req.query["returnTo"], req) });
   const url = new URL(XAMAN_AUTHORIZE_URL);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("client_id", clientId);
@@ -57,17 +59,23 @@ router.get("/auth/xaman/callback", rateLimit({ keyPrefix: "xaman-callback", wind
   }
 
   const redirectUri = `${publicBaseUrl(req)}/api/auth/xaman/callback`;
-  const tokenResponse = await fetch(XAMAN_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: redirectUri,
-      client_id: clientId,
-      client_secret: clientSecret,
-    }),
-  });
+  let tokenResponse: Response;
+  try {
+    tokenResponse = await fetch(XAMAN_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: redirectUri,
+        client_id: clientId,
+        client_secret: clientSecret,
+      }),
+    });
+  } catch {
+    res.status(502).send("Could not reach Xaman token endpoint. Check local network access and Xaman OAuth configuration.");
+    return;
+  }
   if (!tokenResponse.ok) {
     res.status(502).send("Xaman token exchange failed.");
     return;
@@ -77,9 +85,15 @@ router.get("/auth/xaman/callback", rateLimit({ keyPrefix: "xaman-callback", wind
     res.status(502).send("Xaman did not return an access token.");
     return;
   }
-  const userResponse = await fetch(XAMAN_USERINFO_URL, {
-    headers: { authorization: `Bearer ${tokenJson.access_token}` },
-  });
+  let userResponse: Response;
+  try {
+    userResponse = await fetch(XAMAN_USERINFO_URL, {
+      headers: { authorization: `Bearer ${tokenJson.access_token}` },
+    });
+  } catch {
+    res.status(502).send("Could not reach Xaman userinfo endpoint. Check local network access and Xaman OAuth configuration.");
+    return;
+  }
   if (!userResponse.ok) {
     res.status(502).send("Xaman userinfo request failed.");
     return;
@@ -92,9 +106,8 @@ router.get("/auth/xaman/callback", rateLimit({ keyPrefix: "xaman-callback", wind
   }
   const session = createSessionToken({ address, displayName: String(userInfo["name"] || address) });
   res.cookie("xrpl_flow_session", session, { httpOnly: true, sameSite: "lax", secure: process.env["NODE_ENV"] === "production", maxAge: 7 * 24 * 60 * 60 * 1000 });
-  const returnTo = sanitizeReturnTo(state.returnTo || "/");
-  const joiner = returnTo.includes("?") ? "&" : "?";
-  res.redirect(`${returnTo}${joiner}xrplFlowSession=${encodeURIComponent(session)}`);
+  const returnTo = sanitizeReturnTo(state.returnTo || "/", req);
+  res.redirect(returnTo);
 });
 
 router.post("/auth/xaman/dev-session", rateLimit({ keyPrefix: "xaman-dev", windowMs: 60_000, max: 10 }), (req, res) => {
