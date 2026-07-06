@@ -96,7 +96,7 @@ test('surfaces invalid workflow imports', async ({ page }) => {
     })),
   });
 
-  await expect(page.getByText(/Invalid workflow: Workflow/i)).toBeVisible();
+  await expect(page.getByText(/Import rejected: workflow must contain at least one node/i)).toBeVisible();
 });
 
 test('labels query-only templates as zero-transaction workflows', async ({ page }) => {
@@ -113,10 +113,12 @@ test('browses and publishes marketplace templates with mocked API responses', as
   await expect(page.getByText(/Sign in with Xaman to publish your workflow templates|Signed in as/i)).toBeVisible();
   await expect(page.getByText(/Storage:|Cloudflare D1|memory fallback/i)).toHaveCount(0);
 
-  page.on('dialog', async dialog => {
-    await dialog.accept(dialog.message().includes('Tags') ? 'Community,Template' : 'Browser smoke publish');
-  });
-  await page.getByRole('button', { name: /Publish current/i }).click();
+  await page.getByRole('button', { name: /Publish open workflow/i }).click();
+  await expect(page.getByRole('heading', { name: 'Publish workflow template' })).toBeVisible();
+  await page.getByLabel('Display name').fill('Tester');
+  await page.getByLabel('Description').fill('Browser smoke publish');
+  await expect(page.getByRole('button', { name: /Community/i })).toBeVisible();
+  await page.getByRole('button', { name: /Publish template/i }).click();
 
   await expect(page.getByText('Send XRP')).toBeVisible();
 });
